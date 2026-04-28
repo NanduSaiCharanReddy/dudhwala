@@ -676,7 +676,7 @@ async function sendOTP() {
   if (!/^\d{10}$/.test(phone)) { toast('Enter a valid 10-digit mobile number'); return; }
 
   try {
-    await API.post('/auth/send-otp', { phone, role: currentRole });
+    await API.post('/auth/send-otp', { phone, name, role: currentRole });
     document.getElementById('otp-phone-display').textContent = phone;
     showStep('step-otp');
     toast('OTP sent! (Demo OTP: 1234)');
@@ -693,7 +693,7 @@ async function verifyOTP() {
   const phone = document.getElementById('inp-phone').value.trim();
   const name = document.getElementById('inp-name').value.trim();
   try {
-    const res = await API.post('/auth/verify-otp', { phone, otp, role: currentRole, name });
+    const res = await API.post('/auth/verify-otp', { phone, otp, role: currentRole, name: name });
     currentUser = res.user;
     await loadCacheForUser();
     launchApp();
@@ -708,12 +708,14 @@ async function verifyOTP() {
 
 async function loginWithCode(name, code) {
   try {
-    const res = await API.post('/vendor/' + 'find' + '/milkmen/link', { unique_code: code.toUpperCase(), name });
-    // fallback: find milkman by code from cache
-    const milkmen = await API.get('/milkman/by-code/' + code.toUpperCase()).catch(() => null);
-    if (milkmen) { currentUser = milkmen; } else { toast('Invalid vendor code'); return; }
-    await loadCacheForUser();
-    launchApp();
+    const res = await API.post('/auth/send-otp', { phone: '0000000000', name, role: 'milkman', vendor_code: code.toUpperCase() });
+    if (res.via_code && res.user) {
+      currentUser = res.user;
+      await loadCacheForUser();
+      launchApp();
+    } else {
+      toast('Invalid vendor code');
+    }
   } catch(e) { toast('Invalid vendor code'); }
 }
 
@@ -721,18 +723,23 @@ async function loadCacheForUser() {
   if (!currentUser) return;
   try {
     if (currentRole === 'vendor') {
-      const dash = await API.get('/vendor/' + currentUser.id + '/dashboard');
-      _cache.milkmen = dash.milkmen || [];
-      _cache.customers = dash.customers || [];
-      _cache.deliveries = dash.deliveries || [];
+      const [milkmen, customers, deliveries] = await Promise.all([
+        API.get('/vendor/' + currentUser.id + '/milkmen'),
+        API.get('/vendor/' + currentUser.id + '/customers'),
+        API.get('/vendor/' + currentUser.id + '/deliveries'),
+      ]);
+      _cache.milkmen = milkmen || [];
+      _cache.customers = customers || [];
+      _cache.deliveries = deliveries || [];
       _cache.vendors = [currentUser];
     } else if (currentRole === 'milkman') {
-      const custs = await API.get('/milkman/' + currentUser.id + '/customers');
+      const [custs, hist] = await Promise.all([
+        API.get('/milkman/' + currentUser.id + '/customers'),
+        API.get('/milkman/' + currentUser.id + '/history'),
+      ]);
       _cache.customers = custs || [];
       _cache.milkmen = [currentUser];
-      const hist = await API.get('/milkman/' + currentUser.id + '/history');
       _cache.deliveries = hist || [];
-      _cache.vendors = currentUser.vendor_id ? [{ id: currentUser.vendor_id }] : [];
     } else if (currentRole === 'customer') {
       const dels = await API.get('/customer/' + currentUser.id + '/deliveries');
       _cache.deliveries = dels || [];
@@ -740,7 +747,6 @@ async function loadCacheForUser() {
     }
   } catch(e) { console.warn('Cache load error', e); }
 }
-
 function showAccessDenied(phone) {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('access-denied').style.display = 'flex';
@@ -914,7 +920,7 @@ async function saveShop() {
   const address = document.getElementById('s-addr').value.trim();
   const price_per_litre = parseFloat(document.getElementById('s-price').value)||60;
   try {
-    const res = await API.put('/vendor/'+currentUser.id+'/shop', { shop_name, address, price_per_litre });
+    const res = await API.put('/vendor/'+currentUser.id+'/shop', { shop_name, name: currentUser.name, address });
     currentUser = { ...currentUser, ...res };
     _cache.vendors = [currentUser];
     toast('Shop updated!');
@@ -964,9 +970,10 @@ async function addMilkman() {
   const phone = document.getElementById('mm-phone').value.trim();
   if (!name||!/^\d{10}$/.test(phone)) { toast('Enter valid name and phone'); return; }
   try {
-    const mm = await API.post('/vendor/'+currentUser.id+'/milkmen', { name, phone });
-    _cache.milkmen.push(mm);
-    toast('Milkman added! Code: '+(mm.unique_code||mm.uniqueCode));
+    const res = await API.post('/vendor/'+currentUser.id+'/milkmen', { name, phone });
+    const mm = res.milkman || res;
+    _cache.milkmen.push({...mm, unique_code: mm.uniqueCode||mm.unique_code});
+    toast('Milkman added! Code: '+(mm.uniqueCode||mm.unique_code));
     document.getElementById('page-v-milkmen').innerHTML = vendorMilkmenHTML();
     attachMilkmanRemoveListeners();
   } catch(e) { toast('Error: '+e.message); }
@@ -975,7 +982,8 @@ async function addMilkman() {
 async function addMilkmanByCode() {
   const code = document.getElementById('mm-code').value.trim().toUpperCase();
   try {
-    const mm = await API.post('/vendor/'+currentUser.id+'/milkmen/link', { unique_code: code });
+    const res = await API.post('/vendor/'+currentUser.id+'/milkmen/link', { code: code });
+    const mm = res.milkman || res;
     const existing = _cache.milkmen.findIndex(m=>m.id===mm.id);
     if (existing >= 0) _cache.milkmen[existing] = mm; else _cache.milkmen.push(mm);
     toast(mm.name+' linked to your shop!');
@@ -1110,7 +1118,8 @@ async function addCustomer() {
   const milkman_id=document.getElementById('c-mm').value||null;
   if(!name||!/^\d{10}$/.test(phone)){toast('Enter valid name and phone');return;}
   try {
-    const c = await API.post('/vendor/'+currentUser.id+'/customers', { name, phone, address, daily_litres, rate_per_litre, milkman_id });
+    const res = await API.post('/vendor/'+currentUser.id+'/customers', { name, phone, address, daily_litres, rate_per_litre, milkman_id });
+    const c = res.customer || {id: res.id||'c_'+Date.now(), name, phone, address, daily_litres, rate_per_litre, milkman_id, dailyLitres: daily_litres, ratePerLitre: rate_per_litre, milkmanId: milkman_id, vendorId: currentUser.id};
     _cache.customers.push(c);
     toast('Customer added!');
     refreshCustomerPage();
@@ -1128,9 +1137,9 @@ async function removeCustomer(id) {
 
 async function assignMilkman(custId, milkmanId) {
   try {
-    const c = await API.patch('/vendor/'+currentUser.id+'/customers/'+custId, { milkman_id: milkmanId||null });
+    await API.patch('/vendor/'+currentUser.id+'/customers/'+custId, { milkman_id: milkmanId||null });
     const idx = _cache.customers.findIndex(x=>x.id===custId);
-    if(idx>=0) _cache.customers[idx] = c;
+    if(idx>=0) { _cache.customers[idx].milkman_id = milkmanId; _cache.customers[idx].milkmanId = milkmanId; }
     const mm = _cache.milkmen.find(m=>m.id===milkmanId);
     toast(mm ? `Assigned to ${mm.name}` : 'Milkman unassigned');
     refreshCustomerPage();
@@ -1141,9 +1150,12 @@ async function togglePayment(custId, month) {
   try {
     const c = _cache.customers.find(x=>x.id===custId);
     const isPaid = c?.payments?.[month];
-    const res = await API.post('/vendor/'+currentUser.id+'/payment/toggle', { customer_id: custId, month, paid: !isPaid });
+    await API.post('/vendor/'+currentUser.id+'/payment/toggle', { customer_id: custId, month });
     const idx = _cache.customers.findIndex(x=>x.id===custId);
-    if(idx>=0) _cache.customers[idx] = res;
+    if(idx>=0) {
+      if(!_cache.customers[idx].payments) _cache.customers[idx].payments = {};
+      _cache.customers[idx].payments[month] = !isPaid;
+    }
     toast(!isPaid ? '✓ Marked as Paid' : 'Marked as Unpaid');
     refreshCustomerPage();
   } catch(e) { toast('Error: '+e.message); }
@@ -1235,9 +1247,9 @@ function attachCustListeners() {
       const inp = document.querySelector(`.rate-inline-input[data-id="${id}"]`);
       const newRate = parseFloat(inp?.value)||60;
       try {
-        const c = await API.patch('/vendor/'+currentUser.id+'/customers/'+id, { rate_per_litre: newRate });
+        await API.patch('/vendor/'+currentUser.id+'/customers/'+id, { rate_per_litre: newRate });
         const idx = _cache.customers.findIndex(x=>x.id===id);
-        if(idx>=0) _cache.customers[idx] = c;
+        if(idx>=0) { _cache.customers[idx].rate_per_litre = newRate; _cache.customers[idx].ratePerLitre = newRate; }
         toast(`Rate updated to ₹${newRate}/L`);
         refreshCustomerPage();
       } catch(e) { toast('Error: '+e.message); }
@@ -1382,7 +1394,7 @@ async function toggleDelivery(custId, defaultLitres, vendorId) {
 
   try {
     const res = await API.post('/milkman/'+currentUser.id+'/delivery/toggle', {
-      customer_id: custId, date: today, litres: defaultLitres, delivered: !isDone
+      date: today, customer_id: custId, vendor_id: vendorId, litres: defaultLitres
     });
 
     if (isDone) {
