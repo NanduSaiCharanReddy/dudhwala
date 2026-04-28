@@ -972,7 +972,7 @@ async function addMilkman() {
   try {
     const res = await API.post('/vendor/'+currentUser.id+'/milkmen', { name, phone });
     const mm = res.milkman || res;
-    _cache.milkmen.push({...mm, unique_code: mm.uniqueCode||mm.unique_code});
+    _cache.milkmen.push({...mm, phone, name, unique_code: mm.uniqueCode||mm.unique_code, uniqueCode: mm.uniqueCode||mm.unique_code});
     toast('Milkman added! Code: '+(mm.uniqueCode||mm.unique_code));
     document.getElementById('page-v-milkmen').innerHTML = vendorMilkmenHTML();
     attachMilkmanRemoveListeners();
