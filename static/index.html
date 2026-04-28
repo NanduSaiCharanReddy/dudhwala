@@ -1119,7 +1119,10 @@ async function addCustomer() {
   if(!name||!/^\d{10}$/.test(phone)){toast('Enter valid name and phone');return;}
   try {
     const res = await API.post('/vendor/'+currentUser.id+'/customers', { name, phone, address, daily_litres, rate_per_litre, milkman_id });
-    const c = res.customer || {id: res.id||'c_'+Date.now(), name, phone, address, daily_litres, rate_per_litre, milkman_id, dailyLitres: daily_litres, ratePerLitre: rate_per_litre, milkmanId: milkman_id, vendorId: currentUser.id};
+    const cBase = res.customer || res;
+    const c = { ...cBase, name, phone, address, daily_litres, rate_per_litre, milkman_id,
+                 dailyLitres: daily_litres, ratePerLitre: rate_per_litre,
+                 milkmanId: milkman_id, vendorId: currentUser.id };
     _cache.customers.push(c);
     toast('Customer added!');
     refreshCustomerPage();
