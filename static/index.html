@@ -859,6 +859,7 @@ function buildVendorUI(sb, ct) {
   document.getElementById('nav-v-dash').classList.add('active');
   attachCustRemoveListeners();
   attachMilkmanRemoveListeners();
+  attachDailyLitresListeners();
 }
 
 function vendorDashHTML() {
@@ -1118,7 +1119,14 @@ function vendorCustomersHTML() {
       <td><strong>${c.name}</strong><br><span style="font-size:12px;color:var(--muted);">${c.address||''}</span></td>
       <td>${c.phone}</td>
       <td style="min-width:180px;">${mmCell}</td>
-      <td>${c.daily_litres||c.dailyLitres||1} L/day</td>
+      <td style="min-width:130px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="daily-label-${c.id}" style="font-weight:600;">${c.daily_litres||c.dailyLitres||1} L/day</span>
+          <button class="btn-sm btn-outline daily-edit-toggle" data-id="${c.id}" style="padding:3px 9px;font-size:11px;">Edit</button>
+          <input class="litre-input daily-inline-input" data-id="${c.id}" type="number" value="${c.daily_litres||c.dailyLitres||1}" min="0.5" step="0.5" style="display:none;width:64px;" />
+          <button class="btn-sm btn-green daily-save-btn" data-id="${c.id}" style="display:none;padding:3px 9px;font-size:11px;">Save</button>
+        </div>
+      </td>
       <td style="min-width:140px;">${rateCell}</td>
       <td style="min-width:180px;">${payCell}</td>
       <td><button class="btn-sm btn-red remove-cust-btn" data-id="${c.id}">Remove</button></td>
@@ -1156,13 +1164,14 @@ function vendorCustomersHTML() {
         </div>
       </div>
       ${customers.length===0?'<div class="empty-state"><div class="e-icon">👥</div><p>No customers yet.</p></div>':''}
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>Milkman</th><th>Daily</th><th>Rate</th><th>Payment</th><th>Action</th></tr></thead><tbody id="cust-tbody">${rows}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>Milkman</th><th>Daily Litres</th><th>Rate</th><th>Payment</th><th>Action</th></tr></thead><tbody id="cust-tbody">${rows}</tbody></table></div>
     </div>`;
 }
 
 function refreshCustomerPage() {
   document.getElementById('page-v-customers').innerHTML = vendorCustomersHTML();
   attachCustListeners();
+  attachDailyLitresListeners();
 }
 
 async function addCustomer() {
@@ -1410,7 +1419,12 @@ function milkmanDashHTML() {
             <div class="glass-wrap" style="width:48px;height:62px;">${milkGlassSVG(done)}</div>
             <span class="card-glass-label" style="color:${glassColor};">${glassLabel}</span>
           </button>
-          <input id="litres-${c.id}" type="number" value="${c.daily_litres||c.dailyLitres||1}" min="0.5" step="0.5" style="width:58px;text-align:center;padding:4px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-weight:700;font-family:'Nunito',sans-serif;background:var(--milk-off);color:var(--deep);" onclick="event.stopPropagation()" />
+          <div style="display:flex;align-items:center;gap:4px;">
+            <button onclick="event.stopPropagation();adjustLitres('${c.id}', ${c.daily_litres||c.dailyLitres||1}, -0.5)" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--border);background:var(--milk-off);cursor:pointer;font-size:14px;font-weight:700;color:var(--red);">−</button>
+            <input id="litres-${c.id}" type="number" value="${c.daily_litres||c.dailyLitres||1}" min="0.5" step="0.5" style="width:52px;text-align:center;padding:4px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-weight:700;font-family:'Nunito',sans-serif;background:var(--milk-off);color:var(--deep);" onclick="event.stopPropagation()" />
+            <button onclick="event.stopPropagation();adjustLitres('${c.id}', ${c.daily_litres||c.dailyLitres||1}, 0.5)" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--border);background:var(--milk-off);cursor:pointer;font-size:14px;font-weight:700;color:var(--green);">+</button>
+          </div>
+          <span style="font-size:10px;color:var(--muted);text-align:center;">Tap glass to deliver</span>
         </div>
       </div>`;
   }).join('');
@@ -1682,6 +1696,44 @@ function stopVendorPolling() {
   if (_vendorPollTimer) { clearInterval(_vendorPollTimer); _vendorPollTimer = null; }
 }
 document.getElementById('modal').addEventListener('click', e=>{ if(e.target===document.getElementById('modal'))closeModal(); });
+
+// ======================= DAILY LITRES EDIT =======================
+function attachDailyLitresListeners() {
+  document.querySelectorAll('.daily-edit-toggle').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const id = this.getAttribute('data-id');
+      this.style.display = 'none';
+      const lbl = document.querySelector('.daily-label-' + id);
+      if(lbl) lbl.style.display = 'none';
+      const inp = document.querySelector('.daily-inline-input[data-id="' + id + '"]');
+      const sav = document.querySelector('.daily-save-btn[data-id="' + id + '"]');
+      if(inp) inp.style.display = 'inline-block';
+      if(sav) sav.style.display = 'inline-block';
+    });
+  });
+  document.querySelectorAll('.daily-save-btn').forEach(btn => {
+    btn.addEventListener('click', async function() {
+      const id = this.getAttribute('data-id');
+      const inp = document.querySelector('.daily-inline-input[data-id="' + id + '"]');
+      const newLitres = parseFloat(inp?.value) || 1;
+      try {
+        await API.patch('/vendor/' + currentUser.id + '/customers/' + id, { daily_litres: newLitres });
+        const idx = _cache.customers.findIndex(x => x.id === id);
+        if(idx >= 0) { _cache.customers[idx].daily_litres = newLitres; _cache.customers[idx].dailyLitres = newLitres; }
+        toast('Daily litres updated to ' + newLitres + 'L');
+        refreshCustomerPage();
+      } catch(e) { toast('Error: ' + e.message); }
+    });
+  });
+}
+
+function adjustLitres(custId, defaultVal, delta) {
+  const inp = document.getElementById('litres-' + custId);
+  if(!inp) return;
+  const current = parseFloat(inp.value) || defaultVal;
+  const newVal = Math.max(0.5, Math.round((current + delta) * 2) / 2);
+  inp.value = newVal;
+}
 
 // ======================= DARK MODE =======================
 function toggleDark() {
