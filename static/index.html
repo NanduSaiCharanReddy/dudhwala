@@ -427,6 +427,47 @@
   #confirm-dialog .cd-msg { font-size:15px; font-weight:700; color:var(--deep); margin-bottom:24px; }
   #confirm-dialog .cd-actions { display:flex; gap:10px; justify-content:center; }
 
+
+  /* ===== DARK MODE ===== */
+  body.dark {
+    --milk:       #1A2235;
+    --milk-off:   #151C2C;
+    --milk-foam:  #1E2D45;
+    --milk-blue:  #1A2D45;
+    --deep:       #E8F0FF;
+    --mid:        #A0B8D8;
+    --muted:      #6A88A8;
+    --accent:     #4A9EFF;
+    --accent-h:   #2280E0;
+    --accent-soft:#162840;
+    --teal:       #26C6DA;
+    --teal-soft:  #0D2D35;
+    --green:      #66BB6A;
+    --green-soft: #0D2510;
+    --red:        #EF5350;
+    --red-soft:   #2D0F0F;
+    --amber:      #FFA726;
+    --amber-soft: #2D1A00;
+    --border:     rgba(74,158,255,0.15);
+    --shadow:     0 2px 20px rgba(0,0,0,0.3);
+    --shadow-lg:  0 8px 48px rgba(0,0,0,0.4);
+  }
+  body.dark .top-nav { background:#1A2235; }
+  body.dark .sidebar { background:#1A2235; }
+  body.dark .card { background:#1A2235; }
+  body.dark .stat-card { background:#1A2235; }
+  body.dark .cust-delivery-card { background:#1A2235; }
+  body.dark .cust-delivery-card.card-done { background:linear-gradient(135deg,#0D2510,#1A2235); }
+  body.dark .login-box { background:#1A2235; }
+  body.dark input, body.dark select { background:#151C2C; color:#E8F0FF; border-color:rgba(74,158,255,0.2); }
+  body.dark tr:hover td { background:#1E2D45; }
+  body.dark td { color:#E8F0FF; }
+  .dark-toggle {
+    background:none; border:2px solid var(--border); border-radius:20px;
+    padding:5px 12px; cursor:pointer; font-size:16px; transition:all 0.2s;
+  }
+  .dark-toggle:hover { border-color:var(--accent); }
+
   @media(max-width:700px) {
     .role-cards { flex-direction:column; align-items:center; }
     .login-box { width:94vw; padding:32px 20px; }
@@ -579,6 +620,7 @@
     <div class="nav-user">
       <span id="nav-badge" class="nav-badge"></span>
       <span id="nav-name" class="nav-name"></span>
+      <button class="dark-toggle" onclick="toggleDark()" id="dark-btn">🌙</button>
       <button class="btn-logout" onclick="logout()">Logout</button>
     </div>
   </nav>
@@ -803,6 +845,7 @@ function buildVendorUI(sb, ct) {
       ${navItem('v-customers','👥','Customers',"showPage('v-customers')")}
       ${navItem('v-deliveries','📦','Deliveries',"showPage('v-deliveries')")}
       ${navItem('v-shop','🏪','Shop Details',"showPage('v-shop')")}
+      ${navItem('v-profile','👤','Profile',"showPage('v-profile')")}
     </div>`;
 
   ct.innerHTML = `
@@ -810,7 +853,8 @@ function buildVendorUI(sb, ct) {
     <div class="page" id="page-v-milkmen">${vendorMilkmenHTML()}</div>
     <div class="page" id="page-v-customers">${vendorCustomersHTML()}</div>
     <div class="page" id="page-v-deliveries">${vendorDeliveriesHTML()}</div>
-    <div class="page" id="page-v-shop">${vendorShopHTML()}</div>`;
+    <div class="page" id="page-v-shop">${vendorShopHTML()}</div>
+    <div class="page" id="page-v-profile">${profileHTML()}</div>`;
 
   document.getElementById('nav-v-dash').classList.add('active');
   attachCustRemoveListeners();
@@ -1102,6 +1146,7 @@ function vendorCustomersHTML() {
       </div>
       <button class="btn-sm btn-accent" onclick="addCustomer()">Add Customer</button>
     </div>
+    <div style="margin-bottom:12px;"><input id="cust-search" placeholder="🔍 Search customers by name or phone..." oninput="filterCustomers()" style="width:100%;padding:12px 16px;border:2px solid var(--border);border-radius:12px;font-size:14px;font-family:'Nunito',sans-serif;font-weight:600;background:var(--milk);color:var(--deep);outline:none;" /></div>
     <div class="card" id="cust-table-card">
       <div class="card-header">
         <div class="card-title" style="margin:0;">Customers (${customers.length})</div>
@@ -1309,9 +1354,10 @@ function vendorDeliveriesHTML() {
       <div class="stat-card"><div class="stat-label">Month Litres</div><div class="stat-val stat-blue">${monthDels.reduce((s,d)=>s+(d.litres||0),0).toFixed(1)}<span class="stat-unit"> L</span></div></div>
       <div class="stat-card"><div class="stat-label">Month Revenue</div><div class="stat-val stat-accent">₹${monthRevenue.toLocaleString('en-IN',{maximumFractionDigits:0})}</div></div>
     </div>
+    <div style="margin-bottom:12px;"><input id="del-search" placeholder="🔍 Search by customer name..." oninput="filterDeliveries()" style="width:100%;padding:12px 16px;border:2px solid var(--border);border-radius:12px;font-size:14px;font-family:'Nunito',sans-serif;font-weight:600;background:var(--milk);color:var(--deep);outline:none;" /></div>
     <div class="card">
       <div class="card-title">Recent Deliveries (Last 30)</div>
-      <div class="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Litres</th><th>Amount</th></tr></thead><tbody>${rows||'<tr><td colspan="4" style="text-align:center;color:var(--muted)">No deliveries yet</td></tr>'}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Litres</th><th>Amount</th></tr></thead><tbody id="del-tbody">${rows||'<tr><td colspan="4" style="text-align:center;color:var(--muted)">No deliveries yet</td></tr>'}</tbody></table></div>
     </div>`;
 }
 
@@ -1326,11 +1372,13 @@ function buildMilkmanUI(sb, ct) {
     <div class="sidebar-section">
       ${navItem('mm-dash','📊','Dashboard',"showPage('mm-dash')")}
       ${navItem('mm-history','📋','History',"showPage('mm-history')")}
+      ${navItem('mm-profile','👤','Profile',"showPage('mm-profile')")}
     </div>`;
 
   ct.innerHTML = `
     <div class="page active" id="page-mm-dash">${milkmanDashHTML()}</div>
-    <div class="page" id="page-mm-history">${milkmanHistoryHTML()}</div>`;
+    <div class="page" id="page-mm-history">${milkmanHistoryHTML()}</div>
+    <div class="page" id="page-mm-profile">${profileHTML()}</div>`;
 
   document.getElementById('nav-mm-dash').classList.add('active');
 }
@@ -1357,10 +1405,13 @@ function milkmanDashHTML() {
           ${c.address ? `<div class="card-cust-meta">${c.address}</div>` : ''}
           <div class="card-litres">${c.daily_litres||c.dailyLitres||1} L/day</div>
         </div>
-        <button class="card-glass-btn" onclick="toggleDelivery('${c.id}',${c.daily_litres||c.dailyLitres||1},'${vendorId}')" id="glass-btn-${c.id}">
-          <div class="glass-wrap" style="width:48px;height:62px;">${milkGlassSVG(done)}</div>
-          <span class="card-glass-label" style="color:${glassColor};">${glassLabel}</span>
-        </button>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+          <button class="card-glass-btn" onclick="toggleDelivery('${c.id}',parseFloat(document.getElementById('litres-${c.id}').value)||${c.daily_litres||c.dailyLitres||1},'${vendorId}')" id="glass-btn-${c.id}">
+            <div class="glass-wrap" style="width:48px;height:62px;">${milkGlassSVG(done)}</div>
+            <span class="card-glass-label" style="color:${glassColor};">${glassLabel}</span>
+          </button>
+          <input id="litres-${c.id}" type="number" value="${c.daily_litres||c.dailyLitres||1}" min="0.5" step="0.5" style="width:58px;text-align:center;padding:4px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-weight:700;font-family:'Nunito',sans-serif;background:var(--milk-off);color:var(--deep);" onclick="event.stopPropagation()" />
+        </div>
       </div>`;
   }).join('');
 
@@ -1463,11 +1514,13 @@ function buildCustomerUI(sb, ct) {
     <div class="sidebar-section">
       ${navItem('cu-dash','🏠','My Deliveries',"showPage('cu-dash')")}
       ${navItem('cu-bill','🧾','Monthly Bill',"showPage('cu-bill')")}
+      ${navItem('cu-profile','👤','Profile',"showPage('cu-profile')")}
     </div>`;
 
   ct.innerHTML = `
     <div class="page active" id="page-cu-dash">${customerDashHTML()}</div>
-    <div class="page" id="page-cu-bill">${customerBillHTML()}</div>`;
+    <div class="page" id="page-cu-bill">${customerBillHTML()}</div>
+    <div class="page" id="page-cu-profile">${profileHTML()}</div>`;
 
   document.getElementById('nav-cu-dash').classList.add('active');
 }
@@ -1511,16 +1564,30 @@ function customerDashHTML() {
     </div>`;
 }
 
-function customerBillHTML() {
+function customerBillHTML(selectedMonth) {
   const now = new Date();
-  const deliveries = (_cache.deliveries||[]).filter(d=>d.date&&d.date.startsWith(thisMonth()));
+  const month = selectedMonth || thisMonth();
+  const deliveries = (_cache.deliveries||[]).filter(d=>d.date&&d.date.startsWith(month));
   const totalLitres = deliveries.reduce((s,d)=>s+(d.litres||0),0);
   const rate = currentUser.rate_per_litre||currentUser.ratePerLitre||60;
   const total = totalLitres * rate;
-  const monthName = now.toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+  const monthName = new Date(month+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+
+  // Build month options (last 6 months)
+  let monthOpts = '';
+  for(let i=0;i<6;i++){
+    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+    const val = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+    const lbl = d.toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+    monthOpts += '<option value="'+val+'"'+(val===month?' selected':'')+'>'+lbl+'</option>';
+  }
 
   return `
     <div class="page-header"><div class="page-title">Monthly Bill</div><div class="page-sub">Auto-generated bill for ${monthName}</div></div>
+    <div style="margin-bottom:16px;max-width:560px;">
+      <label style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:0.8px;display:block;margin-bottom:7px;">Select Month</label>
+      <select onchange="document.getElementById('page-cu-bill').innerHTML=customerBillHTML(this.value)" style="padding:10px 16px;border:2px solid var(--border);border-radius:12px;font-size:14px;font-family:'Nunito',sans-serif;font-weight:600;background:var(--milk);color:var(--deep);outline:none;">${monthOpts}</select>
+    </div>
     <div class="card" style="max-width:560px;">
       <div class="bill-box">
         <div class="bill-header">
@@ -1615,6 +1682,74 @@ function stopVendorPolling() {
   if (_vendorPollTimer) { clearInterval(_vendorPollTimer); _vendorPollTimer = null; }
 }
 document.getElementById('modal').addEventListener('click', e=>{ if(e.target===document.getElementById('modal'))closeModal(); });
+
+// ======================= DARK MODE =======================
+function toggleDark() {
+  document.body.classList.toggle('dark');
+  const btn = document.getElementById('dark-btn');
+  if(btn) btn.textContent = document.body.classList.contains('dark') ? '☀️' : '🌙';
+  localStorage.setItem('dw_dark', document.body.classList.contains('dark') ? '1' : '0');
+}
+(function() {
+  if(localStorage.getItem('dw_dark') === '1') {
+    document.body.classList.add('dark');
+    setTimeout(()=>{ const b=document.getElementById('dark-btn'); if(b) b.textContent='☀️'; }, 100);
+  }
+})();
+
+// ======================= SEARCH/FILTER =======================
+function filterCustomers() {
+  const q = (document.getElementById('cust-search')?.value||'').toLowerCase();
+  document.querySelectorAll('#cust-tbody tr').forEach(row => {
+    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+function filterDeliveries() {
+  const q = (document.getElementById('del-search')?.value||'').toLowerCase();
+  document.querySelectorAll('#del-tbody tr').forEach(row => {
+    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+// ======================= PROFILE PAGE =======================
+function profileHTML() {
+  const u = currentUser;
+  const role = currentRole;
+  const fields = [];
+
+  if(role === 'vendor') {
+    fields.push(['Name', u.name||''], ['Shop Name', u.shop_name||u.shopName||''], ['Phone', u.phone||''], ['Address', u.address||''], ['Price per Litre', '₹'+(u.price_per_litre||u.pricePerLitre||60)+'/L'], ['Vendor Code', u.id||'']);
+  } else if(role === 'milkman') {
+    fields.push(['Name', u.name||''], ['Phone', u.phone||''], ['Unique Code', u.unique_code||u.uniqueCode||''], ['Customers Assigned', (_cache.customers||[]).length+'']);
+  } else {
+    fields.push(['Name', u.name||''], ['Phone', u.phone||''], ['Address', u.address||''], ['Daily Litres', (u.daily_litres||u.dailyLitres||1)+' L/day'], ['Rate per Litre', '₹'+(u.rate_per_litre||u.ratePerLitre||60)+'/L']);
+  }
+
+  const avatar = role==='vendor'?'🏪':role==='milkman'?'🛺':'🏠';
+  const badge = role==='vendor'?'Vendor':role==='milkman'?'Milkman':'Customer';
+  const badgeCls = role==='vendor'?'badge-vendor':role==='milkman'?'badge-milkman':'badge-customer';
+
+  return `
+    <div class="page-header"><div class="page-title">My Profile</div><div class="page-sub">Your account details</div></div>
+    <div class="card" style="max-width:500px;">
+      <div style="display:flex;align-items:center;gap:20px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--border);">
+        <div style="width:72px;height:72px;border-radius:50%;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;font-size:32px;flex-shrink:0;">${avatar}</div>
+        <div>
+          <div style="font-size:22px;font-weight:900;color:var(--deep);">${u.name||u.shop_name||u.shopName||'User'}</div>
+          <span class="nav-badge ${badgeCls}" style="margin-top:6px;display:inline-block;">${badge}</span>
+        </div>
+      </div>
+      ${fields.map(([label, val])=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);">
+          <div style="font-size:12px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;">${label}</div>
+          <div style="font-size:14px;font-weight:700;color:var(--deep);font-family:${label.includes('Code')||label.includes('Litre')||label.includes('Rate')?'JetBrains Mono':'Nunito'},sans-serif;">${val||'—'}</div>
+        </div>`).join('')}
+      <div style="margin-top:20px;">
+        <button class="btn-sm btn-red" onclick="confirmAction('Are you sure you want to logout?', logout)">Logout</button>
+      </div>
+    </div>`;
+}
 </script>
 </body>
 </html>
