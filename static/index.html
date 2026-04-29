@@ -1398,33 +1398,54 @@ function milkmanDashHTML() {
   const todayDels = (_cache.deliveries||[]).filter(d=>d.date===today);
   const deliveredSet = new Set(todayDels.map(d=>d.customer_id||d.customerId));
   const monthDels = (_cache.deliveries||[]).filter(d=>d.date&&d.date.startsWith(thisMonth()));
-  const vendor = { shop_name: currentUser.vendor_shop_name || 'Your dairy' };
+  const todayLitres = todayDels.reduce((s,d)=>s+(d.litres||0),0);
   const displayDate = new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  const remaining = myCustomers.length - deliveredSet.size;
 
   const cards = myCustomers.map((c, i)=>{
     const done = deliveredSet.has(c.id);
-    const glassColor = done ? 'var(--green)' : 'var(--muted)';
-    const glassLabel = done ? '✓ Done' : 'Tap';
+    const deliveredLitres = done ? (todayDels.find(d=>(d.customer_id||d.customerId)===c.id)?.litres||0) : 0;
     const vendorId = c.vendor_id||c.vendorId||'';
+    const defaultL = c.daily_litres||c.dailyLitres||1;
+
+    // If delivered today — show locked card with delivered info
+    if (done) {
+      return `
+        <div class="cust-delivery-card card-done" id="card-${c.id}" style="z-index:${i+1};">
+          <div class="card-info">
+            <div class="card-cust-name">${c.name}</div>
+            <div class="card-cust-meta">${c.phone}</div>
+            ${c.address ? `<div class="card-cust-meta">${c.address}</div>` : ''}
+            <div class="card-litres" style="color:var(--green);">✓ Delivered ${deliveredLitres}L today</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px;">Next delivery: tomorrow</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:5px;">
+            <div class="glass-wrap" style="width:48px;height:62px;">${milkGlassSVG(true)}</div>
+            <span style="font-size:10px;font-weight:800;color:var(--green);">✓ Done</span>
+          </div>
+        </div>`;
+    }
+
+    // Not delivered — show with +/- and tap button
     return `
-      <div class="cust-delivery-card ${done?'card-done':''}" id="card-${c.id}" style="z-index:${i + 1};">
+      <div class="cust-delivery-card" id="card-${c.id}" style="z-index:${i+1};">
         <div class="card-info">
           <div class="card-cust-name">${c.name}</div>
           <div class="card-cust-meta">${c.phone}</div>
           ${c.address ? `<div class="card-cust-meta">${c.address}</div>` : ''}
-          <div class="card-litres">${c.daily_litres||c.dailyLitres||1} L/day</div>
+          <div class="card-litres">${defaultL} L/day</div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
-          <button class="card-glass-btn" onclick="toggleDelivery('${c.id}',parseFloat(document.getElementById('litres-${c.id}').value)||${c.daily_litres||c.dailyLitres||1},'${vendorId}')" id="glass-btn-${c.id}">
-            <div class="glass-wrap" style="width:48px;height:62px;">${milkGlassSVG(done)}</div>
-            <span class="card-glass-label" style="color:${glassColor};">${glassLabel}</span>
+          <button class="card-glass-btn" onclick="toggleDelivery('${c.id}',parseFloat(document.getElementById('litres-${c.id}').value)||${defaultL},'${vendorId}')" id="glass-btn-${c.id}">
+            <div class="glass-wrap" style="width:48px;height:62px;">${milkGlassSVG(false)}</div>
+            <span class="card-glass-label" style="color:var(--muted);">Tap</span>
           </button>
           <div style="display:flex;align-items:center;gap:4px;">
-            <button onclick="event.stopPropagation();adjustLitres('${c.id}', ${c.daily_litres||c.dailyLitres||1}, -0.5)" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--border);background:var(--milk-off);cursor:pointer;font-size:14px;font-weight:700;color:var(--red);">−</button>
-            <input id="litres-${c.id}" type="number" value="${c.daily_litres||c.dailyLitres||1}" min="0.5" step="0.5" style="width:52px;text-align:center;padding:4px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-weight:700;font-family:'Nunito',sans-serif;background:var(--milk-off);color:var(--deep);" onclick="event.stopPropagation()" />
-            <button onclick="event.stopPropagation();adjustLitres('${c.id}', ${c.daily_litres||c.dailyLitres||1}, 0.5)" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--border);background:var(--milk-off);cursor:pointer;font-size:14px;font-weight:700;color:var(--green);">+</button>
+            <button onclick="event.stopPropagation();adjustLitres('${c.id}',${defaultL},-0.5)" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--border);background:var(--milk-off);cursor:pointer;font-size:14px;font-weight:700;color:var(--red);">−</button>
+            <input id="litres-${c.id}" type="number" value="${defaultL}" min="0.5" step="0.5" style="width:52px;text-align:center;padding:4px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-weight:700;font-family:'Nunito',sans-serif;background:var(--milk-off);color:var(--deep);" onclick="event.stopPropagation()" />
+            <button onclick="event.stopPropagation();adjustLitres('${c.id}',${defaultL},0.5)" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--border);background:var(--milk-off);cursor:pointer;font-size:14px;font-weight:700;color:var(--green);">+</button>
           </div>
-          <span style="font-size:10px;color:var(--muted);text-align:center;">Tap glass to deliver</span>
+          <span style="font-size:10px;color:var(--muted);">Tap glass to deliver</span>
         </div>
       </div>`;
   }).join('');
@@ -1432,17 +1453,34 @@ function milkmanDashHTML() {
   return `
     <div class="page-header">
       <div class="page-title">My Route</div>
-      <div class="page-sub">${displayDate} &nbsp;·&nbsp; ${vendor.shop_name}</div>
+      <div class="page-sub">${displayDate}</div>
     </div>
-    <div style="display:flex;gap:12px;margin-bottom:24px;">
-      <div class="stat-card" style="flex:1;padding:14px 18px;"><div class="stat-label">Total</div><div class="stat-val" style="font-size:24px;">${myCustomers.length}</div></div>
-      <div class="stat-card" style="flex:1;padding:14px 18px;"><div class="stat-label">Delivered</div><div class="stat-val stat-green" style="font-size:24px;" id="log-delivered-count">${deliveredSet.size}</div></div>
-      <div class="stat-card" style="flex:1;padding:14px 18px;"><div class="stat-label">Remaining</div><div class="stat-val stat-accent" style="font-size:24px;" id="log-remaining-count">${myCustomers.length-deliveredSet.size}</div></div>
-      <div class="stat-card" style="flex:1;padding:14px 18px;"><div class="stat-label">Month Litres</div><div class="stat-val stat-blue" style="font-size:24px;">${monthDels.reduce((s,d)=>s+(d.litres||0),0).toFixed(1)}</div></div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
+      <div class="stat-card" style="padding:14px 18px;"><div class="stat-label">Total Customers</div><div class="stat-val" style="font-size:26px;">${myCustomers.length}</div></div>
+      <div class="stat-card" style="padding:14px 18px;"><div class="stat-label">Delivered Today</div><div class="stat-val stat-green" style="font-size:26px;" id="log-delivered-count">${deliveredSet.size}</div></div>
+      <div class="stat-card" style="padding:14px 18px;"><div class="stat-label">Remaining</div><div class="stat-val stat-accent" style="font-size:26px;" id="log-remaining-count">${remaining}</div></div>
+      <div class="stat-card" style="padding:14px 18px;"><div class="stat-label">Today's Litres</div><div class="stat-val stat-blue" style="font-size:26px;" id="log-today-litres">${todayLitres.toFixed(1)}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:20px;">
+      <div class="card-title" style="margin-bottom:12px;">📊 Today's Summary</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+        <div style="text-align:center;padding:12px;background:var(--green-soft);border-radius:12px;">
+          <div style="font-size:22px;font-weight:900;color:var(--green);" id="summary-delivered">${deliveredSet.size}</div>
+          <div style="font-size:11px;color:var(--muted);font-weight:700;margin-top:4px;">DELIVERED</div>
+        </div>
+        <div style="text-align:center;padding:12px;background:var(--red-soft);border-radius:12px;">
+          <div style="font-size:22px;font-weight:900;color:var(--red);" id="summary-pending">${remaining}</div>
+          <div style="font-size:11px;color:var(--muted);font-weight:700;margin-top:4px;">PENDING</div>
+        </div>
+        <div style="text-align:center;padding:12px;background:var(--accent-soft);border-radius:12px;">
+          <div style="font-size:22px;font-weight:900;color:var(--accent);" id="summary-litres">${todayLitres.toFixed(1)}L</div>
+          <div style="font-size:11px;color:var(--muted);font-weight:700;margin-top:4px;">TOTAL LITRES</div>
+        </div>
+      </div>
     </div>
     ${myCustomers.length===0
-      ?'<div class="empty-state"><div class="e-icon">👥</div><p>No customers assigned to you yet.</p></div>'
-      :`<div class="cust-cards-grid">${cards}</div>`
+      ? '<div class="empty-state"><div class="e-icon">👥</div><p>No customers assigned to you yet.</p></div>'
+      : `<div class="cust-cards-grid">${cards}</div>`
     }`;
 }
 
@@ -1501,10 +1539,35 @@ async function toggleDelivery(custId, defaultLitres, vendorId) {
 
     const allCusts = _cache.customers;
     const todayDels = _cache.deliveries.filter(d=>d.date===today);
+    const totalLitres = todayDels.reduce((s,d)=>s+(d.litres||0),0);
     const dc = document.getElementById('log-delivered-count');
     const rc = document.getElementById('log-remaining-count');
+    const tl = document.getElementById('log-today-litres');
+    const sd = document.getElementById('summary-delivered');
+    const sp = document.getElementById('summary-pending');
+    const sl = document.getElementById('summary-litres');
     if(dc) dc.textContent = todayDels.length;
     if(rc) rc.textContent = allCusts.length - todayDels.length;
+    if(tl) tl.textContent = totalLitres.toFixed(1);
+    if(sd) sd.textContent = todayDels.length;
+    if(sp) sp.textContent = allCusts.length - todayDels.length;
+    if(sl) sl.textContent = totalLitres.toFixed(1)+'L';
+    // Rebuild the delivered card to show locked state
+    const card = document.getElementById('card-'+custId);
+    if(card && !isDone) {
+      const deliveredLitres = defaultLitres;
+      card.classList.add('card-done');
+      card.innerHTML = '<div class="card-info">' +
+        '<div class="card-cust-name">' + (allCusts.find(c=>c.id===custId)?.name||'') + '</div>' +
+        '<div class="card-cust-meta">' + (allCusts.find(c=>c.id===custId)?.phone||'') + '</div>' +
+        '<div class="card-litres" style="color:var(--green);">✓ Delivered ' + deliveredLitres + 'L today</div>' +
+        '<div style="font-size:11px;color:var(--muted);margin-top:2px;">Next delivery: tomorrow</div>' +
+        '</div>' +
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:5px;">' +
+        '<div class="glass-wrap" style="width:48px;height:62px;">' + milkGlassSVG(true) + '</div>' +
+        '<span style="font-size:10px;font-weight:800;color:var(--green);">✓ Done</span>' +
+        '</div>';
+    }
   } catch(e) { toast('Error: '+e.message); }
 }
 
