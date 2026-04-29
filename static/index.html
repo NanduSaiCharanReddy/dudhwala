@@ -609,74 +609,29 @@
 </div>
 
 <script>
-// ══════════════════════════════════════════════════
-//  API LAYER — talks to Python backend
-// ══════════════════════════════════════════════════
-const API_BASE = '';  // same origin — backend serves this file
-
-async function api(method, path, body = null) {
-  try {
-    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+// ======================= API LAYER =======================
+const API = {
+  async call(method, path, body) {
+    const opts = { method, headers: {'Content-Type':'application/json'} };
     if (body) opts.body = JSON.stringify(body);
-    const res  = await fetch(API_BASE + path, opts);
-    const data = await res.json();
-    if (!res.ok) throw data.detail || 'Server error';
-    return data;
-  } catch(e) {
-    if (typeof e === 'string') throw e;
-    if (e && e.detail) throw e.detail;
-    throw 'Cannot reach server. Check your connection.';
-  }
-}
-
-// ══════════════════════════════════════════════════
-//  KEEP localStorage DB for offline/demo fallback
-// ══════════════════════════════════════════════════
-const DB = {
-  get(k) { try { return JSON.parse(localStorage.getItem('dw_'+k)||'null'); } catch{ return null; } },
-  set(k,v) { localStorage.setItem('dw_'+k, JSON.stringify(v)); },
-  del(k) { localStorage.removeItem('dw_'+k); }
+    const r = await fetch('/api' + path, opts);
+    if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || r.statusText); }
+    return r.json();
+  },
+  get: (path) => API.call('GET', path),
+  post: (path, body) => API.call('POST', path, body),
+  put: (path, body) => API.call('PUT', path, body),
+  patch: (path, body) => API.call('PATCH', path, body),
+  delete: (path) => API.call('DELETE', path),
 };
 
-function initDB() {
-  if (!DB.get('vendors')) DB.set('vendors', []);
-  if (!DB.get('milkmen')) DB.set('milkmen', []);
-  if (!DB.get('customers')) DB.set('customers', []);
-  if (!DB.get('deliveries')) DB.set('deliveries', []);
-  if (!DB.get('codes')) DB.set('codes', {});
-  // Demo seed
-  const vendors = DB.get('vendors');
-  if (vendors.length === 0) {
-    const v = { id:'v1', name:'Sharma Dairy', phone:'9900001111', shopName:'Sharma Fresh Dairy', address:'Banjara Hills, Hyderabad', pricePerLitre:60, createdAt: Date.now() };
-    DB.set('vendors', [v]);
-    const codes = {};
-    codes['v1'] = { vendorId:'v1', milkmanCodes:[], customerCodes:[] };
-    DB.set('codes', codes);
-    const mm = [
-      { id:'mm1', name:'Raju Kumar', phone:'9900002222', vendorId:'v1', uniqueCode:'MK1234', active:true },
-      { id:'mm2', name:'Suresh Yadav', phone:'9900003333', vendorId:'v1', uniqueCode:'MK5678', active:true }
-    ];
-    DB.set('milkmen', mm);
-    const custs = [
-      { id:'c1', name:'Priya Sharma', phone:'9900004444', vendorId:'v1', milkmanId:'mm1', dailyLitres:2, address:'Flat 101, Green Valley, Banjara Hills', active:true },
-      { id:'c2', name:'Anil Reddy', phone:'9900005555', vendorId:'v1', milkmanId:'mm1', dailyLitres:1.5, address:'Flat 202, Sun Towers, Jubilee Hills', active:true },
-      { id:'c3', name:'Kavitha Nair', phone:'9900006666', vendorId:'v1', milkmanId:'mm2', dailyLitres:1, address:'House 45, Madhapur', active:true },
-      { id:'c4', name:'Rajesh Mehta', phone:'9900007777', vendorId:'v1', milkmanId:'mm2', dailyLitres:3, address:'Villa 7, Gachibowli', active:true }
-    ];
-    DB.set('customers', custs);
-    // seed some deliveries this month
-    const now = new Date();
-    const dels = [];
-    for(let d=1; d<=now.getDate()-1; d++) {
-      const date = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-      custs.forEach(c => {
-        dels.push({ id:'del_'+d+'_'+c.id, date, customerId:c.id, milkmanId:c.milkmanId, litres:c.dailyLitres, vendorId:'v1' });
-      });
-    }
-    DB.set('deliveries', dels);
-  }
-}
-initDB();
+// In-memory cache filled after login
+let _cache = { vendors:[], milkmen:[], customers:[], deliveries:[] };
+
+// Legacy DB shim — reads from cache only (writes go through API)
+const DB = {
+  get(k) { return _cache[k] ?? []; },
+};
 
 // ======================= STATE =======================
 let currentRole = null, currentUser = null;
@@ -711,36 +666,21 @@ function showStep(id) {
 // ======================= OTP =======================
 async function sendOTP() {
   const phone = document.getElementById('inp-phone').value.trim();
-  const name  = document.getElementById('inp-name').value.trim();
+  const name = document.getElementById('inp-name').value.trim();
   const vcode = document.getElementById('inp-vendor-code').value.trim();
-  const btn   = document.querySelector('#step-phone .btn-primary');
 
-  if (!name) { toast('Please enter your name'); return; }
-
-  // Milkman with vendor code — skip OTP entirely
   if (currentRole === 'milkman' && vcode) {
-    btn.disabled = true; btn.textContent = 'Checking...';
-    try {
-      const res = await api('POST', '/api/auth/send-otp', { phone: phone||'0000000000', name, role:'milkman', vendor_code: vcode });
-      if (res.via_code) { currentUser = res.user; launchApp(); return; }
-    } catch(e) {
-      toast(e === 'INVALID_CODE' ? 'Invalid vendor code' : (e || 'Error — check connection'));
-    } finally { btn.disabled = false; btn.textContent = 'Send OTP'; }
-    return;
+    await loginWithCode(name, vcode); return;
   }
-
+  if (!name) { toast('Please enter your name'); return; }
   if (!/^\d{10}$/.test(phone)) { toast('Enter a valid 10-digit mobile number'); return; }
 
-  btn.disabled = true; btn.textContent = 'Sending...';
   try {
-    await api('POST', '/api/auth/send-otp', { phone, name, role: currentRole });
+    await API.post('/auth/send-otp', { phone, name, role: currentRole });
     document.getElementById('otp-phone-display').textContent = phone;
     showStep('step-otp');
-    toast('OTP sent! (Demo: 1234)');
-  } catch(e) {
-    if (e === 'NOT_REGISTERED') showAccessDenied(phone);
-    else toast(e || 'Could not send OTP. Check your connection.');
-  } finally { btn.disabled = false; btn.textContent = 'Send OTP'; }
+    toast('OTP sent! (Demo OTP: 1234)');
+  } catch(e) { toast('Error: ' + e.message); }
 }
 
 function otpNext(i) {
@@ -749,25 +689,64 @@ function otpNext(i) {
 }
 
 async function verifyOTP() {
-  const otp   = [0,1,2,3].map(i=>document.getElementById('otp'+i).value).join('');
+  const otp = [0,1,2,3].map(i=>document.getElementById('otp'+i).value).join('');
   const phone = document.getElementById('inp-phone').value.trim();
-  const name  = document.getElementById('inp-name').value.trim();
-  const btn   = document.querySelector('#step-otp .btn-primary');
-
-  if (otp.length < 4) { toast('Enter all 4 digits'); return; }
-
-  btn.disabled = true; btn.textContent = 'Verifying...';
+  const name = document.getElementById('inp-name').value.trim();
   try {
-    const res = await api('POST', '/api/auth/verify-otp', { phone, otp, name, role: currentRole });
+    const res = await API.post('/auth/verify-otp', { phone, otp, role: currentRole, name: name });
     currentUser = res.user;
+    await loadCacheForUser();
     launchApp();
   } catch(e) {
-    if (e === 'INVALID_OTP') toast('Invalid OTP. Use 1234');
-    else if (e === 'NOT_REGISTERED') showAccessDenied(phone);
-    else toast(e || 'Login failed. Try again.');
-  } finally { btn.disabled = false; btn.textContent = 'Verify & Login'; }
+    if (e.message && e.message.toLowerCase().includes('not found')) {
+      showAccessDenied(phone);
+    } else {
+      toast(e.message || 'Invalid OTP. Use 1234 for demo');
+    }
+  }
 }
 
+async function loginWithCode(name, code) {
+  try {
+    const res = await API.post('/auth/send-otp', { phone: '0000000000', name, role: 'milkman', vendor_code: code.toUpperCase() });
+    if (res.via_code && res.user) {
+      currentUser = res.user;
+      await loadCacheForUser();
+      launchApp();
+    } else {
+      toast('Invalid vendor code');
+    }
+  } catch(e) { toast('Invalid vendor code'); }
+}
+
+async function loadCacheForUser() {
+  if (!currentUser) return;
+  try {
+    if (currentRole === 'vendor') {
+      const [milkmen, customers, deliveries] = await Promise.all([
+        API.get('/vendor/' + currentUser.id + '/milkmen'),
+        API.get('/vendor/' + currentUser.id + '/customers'),
+        API.get('/vendor/' + currentUser.id + '/deliveries'),
+      ]);
+      _cache.milkmen = milkmen || [];
+      _cache.customers = customers || [];
+      _cache.deliveries = deliveries || [];
+      _cache.vendors = [currentUser];
+    } else if (currentRole === 'milkman') {
+      const [custs, hist] = await Promise.all([
+        API.get('/milkman/' + currentUser.id + '/customers'),
+        API.get('/milkman/' + currentUser.id + '/history'),
+      ]);
+      _cache.customers = custs || [];
+      _cache.milkmen = [currentUser];
+      _cache.deliveries = hist || [];
+    } else if (currentRole === 'customer') {
+      const dels = await API.get('/customer/' + currentUser.id + '/deliveries');
+      _cache.deliveries = dels || [];
+      _cache.customers = [currentUser];
+    }
+  } catch(e) { console.warn('Cache load error', e); }
+}
 function showAccessDenied(phone) {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('access-denied').style.display = 'flex';
@@ -783,12 +762,13 @@ function launchApp() {
   const nb = document.getElementById('nav-badge');
   nb.textContent = labelMap[currentRole];
   nb.className = 'nav-badge '+badgeMap[currentRole];
-  document.getElementById('nav-name').textContent = currentUser.name || currentUser.shopName;
+  document.getElementById('nav-name').textContent = currentUser.name || currentUser.shop_name || currentUser.shopName;
   buildUI();
 }
 
 function logout() {
   currentUser = null; currentRole = null;
+  _cache = { vendors:[], milkmen:[], customers:[], deliveries:[] };
   document.getElementById('app').style.display = 'none';
   document.getElementById('splash').style.display = 'flex';
 }
@@ -837,46 +817,40 @@ function buildVendorUI(sb, ct) {
 }
 
 function vendorDashHTML() {
-  const milkmen = DB.get('milkmen').filter(m=>m.vendorId===currentUser.id);
-  const customers = DB.get('customers').filter(c=>c.vendorId===currentUser.id);
+  const milkmen = _cache.milkmen || [];
+  const customers = _cache.customers || [];
   const today = todayStr();
-  const deliveries = DB.get('deliveries');
-  const todayDels = deliveries.filter(d=>d.date===today && d.vendorId===currentUser.id);
-  const totalToday = todayDels.reduce((s,d)=>s+d.litres,0);
-  const monthDels = deliveries.filter(d=>d.date.startsWith(thisMonth()) && d.vendorId===currentUser.id);
-  const monthTotal = monthDels.reduce((s,d)=>s+d.litres,0);
-  // Revenue: sum per delivery using that customer's rate (falls back to 60 if not set)
+  const deliveries = _cache.deliveries || [];
+  const todayDels = deliveries.filter(d=>d.date===today);
+  const totalToday = todayDels.reduce((s,d)=>s+(d.litres||0),0);
+  const monthDels = deliveries.filter(d=>d.date&&d.date.startsWith(thisMonth()));
+  const monthTotal = monthDels.reduce((s,d)=>s+(d.litres||0),0);
   const custMap = {};
   customers.forEach(c=>custMap[c.id]=c);
   const monthRevenue = monthDels.reduce((s,d)=>{
-    const c = custMap[d.customerId];
-    return s + d.litres * (c?.ratePerLitre || 60);
+    const c = custMap[d.customer_id||d.customerId];
+    return s + (d.litres||0) * (c?.rate_per_litre||c?.ratePerLitre||60);
   }, 0);
   const todayRevenue = todayDels.reduce((s,d)=>{
-    const c = custMap[d.customerId];
-    return s + d.litres * (c?.ratePerLitre || 60);
+    const c = custMap[d.customer_id||d.customerId];
+    return s + (d.litres||0) * (c?.rate_per_litre||c?.ratePerLitre||60);
   }, 0);
-
-  // Per-milkman breakdown for today
   const mmBreakdown = milkmen.map(m=>{
-    const mDels = todayDels.filter(d=>d.milkmanId===m.id);
-    const mLitres = mDels.reduce((s,d)=>s+d.litres,0);
-    const mCusts = customers.filter(c=>c.milkmanId===m.id).length;
-    const mDone = new Set(mDels.map(d=>d.customerId)).size;
+    const mDels = todayDels.filter(d=>d.milkman_id===m.id||d.milkmanId===m.id);
+    const mLitres = mDels.reduce((s,d)=>s+(d.litres||0),0);
+    const mCusts = customers.filter(c=>c.milkman_id===m.id||c.milkmanId===m.id).length;
+    const mDone = new Set(mDels.map(d=>d.customer_id||d.customerId)).size;
     return { name:m.name, litres:mLitres, total:mCusts, done:mDone };
   });
-
 
   return `
     <div class="page-header">
       <div class="page-title">Good ${timeGreet()}, ${currentUser.name}! 👋</div>
-      <div class="page-sub">${currentUser.shopName} — ${new Date().toLocaleDateString('en-IN',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</div>
+      <div class="page-sub">${currentUser.shop_name||currentUser.shopName} — ${new Date().toLocaleDateString('en-IN',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</div>
     </div>
-
-    <!-- Row 1: Team overview -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
       <div class="stat-card" style="display:flex;align-items:center;gap:16px;">
-        <div style="width:44px;height:44px;border-radius:12px;background:var(--blue-soft);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;">🛺</div>
+        <div style="width:44px;height:44px;border-radius:12px;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;">🛺</div>
         <div><div class="stat-label" style="margin-bottom:4px;">Milkmen</div><div class="stat-val stat-blue" style="font-size:28px;">${milkmen.length}</div></div>
       </div>
       <div class="stat-card" style="display:flex;align-items:center;gap:16px;">
@@ -884,8 +858,6 @@ function vendorDashHTML() {
         <div><div class="stat-label" style="margin-bottom:4px;">Customers</div><div class="stat-val stat-accent" style="font-size:28px;">${customers.length}</div></div>
       </div>
     </div>
-
-    <!-- Row 2: Today -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
       <div class="stat-card" style="display:flex;align-items:center;gap:16px;">
         <div style="width:44px;height:44px;border-radius:12px;background:var(--green-soft);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;">🥛</div>
@@ -896,11 +868,9 @@ function vendorDashHTML() {
         <div><div class="stat-label" style="margin-bottom:4px;">Today's Revenue</div><div class="stat-val stat-accent" style="font-size:28px;">₹${todayRevenue.toLocaleString('en-IN',{maximumFractionDigits:0})}</div></div>
       </div>
     </div>
-
-    <!-- Row 3: Month -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:28px;">
       <div class="stat-card" style="display:flex;align-items:center;gap:16px;">
-        <div style="width:44px;height:44px;border-radius:12px;background:var(--blue-soft);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;">📦</div>
+        <div style="width:44px;height:44px;border-radius:12px;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;">📦</div>
         <div><div class="stat-label" style="margin-bottom:4px;">Month Litres</div><div class="stat-val stat-blue" style="font-size:28px;">${monthTotal.toFixed(1)}<span class="stat-unit"> L</span></div></div>
       </div>
       <div class="stat-card" style="display:flex;align-items:center;gap:16px;">
@@ -908,170 +878,66 @@ function vendorDashHTML() {
         <div><div class="stat-label" style="margin-bottom:4px;">Month Revenue</div><div class="stat-val stat-green" style="font-size:28px;">₹${monthRevenue.toLocaleString('en-IN',{maximumFractionDigits:0})}</div></div>
       </div>
     </div>
-
-    <!-- Bottom row: Today summary + redirect buttons -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
-
-      <!-- Today's milkman summary -->
       <div class="card" style="margin-bottom:0;">
         <div class="card-title">Today's Delivery Summary</div>
         ${mmBreakdown.length===0?'<div class="empty-state" style="padding:16px 0;"><p>No milkmen yet.</p></div>':''}
         ${mmBreakdown.map(m=>`
           <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);">
-            <div>
-              <div style="font-weight:600;font-size:13px;">${m.name}</div>
-              <div style="font-size:11px;color:var(--muted);margin-top:2px;">${m.done}/${m.total} customers</div>
-            </div>
+            <div><div style="font-weight:600;font-size:13px;">${m.name}</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">${m.done}/${m.total} customers</div></div>
             <div style="font-size:15px;font-weight:700;color:var(--green);">${m.litres.toFixed(1)} L</div>
           </div>`).join('')}
-        ${mmBreakdown.length>0?`<div style="display:flex;justify-content:space-between;margin-top:12px;font-weight:700;font-size:13px;color:var(--accent);">
-          <span>Total</span><span>${totalToday.toFixed(1)} L · ₹${todayRevenue.toLocaleString('en-IN',{maximumFractionDigits:0})}</span>
-        </div>`:''}
+        ${mmBreakdown.length>0?`<div style="display:flex;justify-content:space-between;margin-top:12px;font-weight:700;font-size:13px;color:var(--accent);"><span>Total</span><span>${totalToday.toFixed(1)} L · ₹${todayRevenue.toLocaleString('en-IN',{maximumFractionDigits:0})}</span></div>`:''}
       </div>
-
-      <!-- Quick actions -->
       <div class="card" style="margin-bottom:0;display:flex;flex-direction:column;justify-content:center;gap:14px;">
         <div class="card-title" style="margin-bottom:4px;">Quick Actions</div>
         <button class="btn-sm btn-accent" style="width:100%;padding:13px;font-size:14px;" onclick="showPage('v-milkmen')">🛺 &nbsp;Manage Milkmen</button>
         <button class="btn-sm btn-blue" style="width:100%;padding:13px;font-size:14px;" onclick="showPage('v-customers')">👥 &nbsp;Manage Customers</button>
         <button class="btn-sm btn-outline" style="width:100%;padding:13px;font-size:14px;" onclick="showPage('v-deliveries')">📦 &nbsp;View Deliveries</button>
       </div>
-
-    </div>
-
-    <!-- Today's Status: all customer cards with +/- -->
-    <div class="card" style="margin-top:20px;">
-      <div class="card-header">
-        <div class="card-title" style="margin:0;">Today's Status — All Customers</div>
-        <span style="font-size:12px;color:var(--muted);font-weight:600;">${todayStr()}</span>
-      </div>
-      ${customers.length===0
-        ? '<div class="empty-state"><div class="e-icon">👥</div><p>No customers yet.</p></div>'
-        : `<div class="cust-cards-grid">${customers.map((c,i)=>{
-            const todayDel = todayDels.find(d=>d.customerId===c.id);
-            const done     = !!todayDel;
-            const litres   = todayDel ? todayDel.litres : c.dailyLitres;
-            const mm       = milkmen.find(m=>m.id===c.milkmanId);
-            const vid      = c.vendorId || currentUser.id;
-            const mid      = c.milkmanId ? `'${c.milkmanId}'` : 'null';
-            return `
-              <div class="cust-delivery-card ${done?'card-done':''}" id="vcard-${c.id}" style="z-index:${i+1};">
-                <div class="card-info">
-                  <div class="card-cust-name">${c.name}</div>
-                  <div class="card-cust-meta">${c.phone}</div>
-                  ${mm?`<div class="card-cust-meta">🛺 ${mm.name}</div>`:'<div class="card-cust-meta" style="color:var(--red);">No milkman</div>'}
-                  <div class="card-litres" id="vlitres-label-${c.id}" style="color:${done?'var(--green)':'var(--accent)'};">${litres} L today</div>
-                </div>
-                <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
-                  <div style="display:flex;align-items:center;gap:8px;">
-                    <button onclick="vendorAdjust('${c.id}','${vid}',${mid},${c.dailyLitres},-0.5)"
-                      style="width:32px;height:32px;border-radius:50%;border:2px solid var(--border);background:var(--milk-off);font-size:18px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--red);line-height:1;flex-shrink:0;">−</button>
-                    <span id="vlitres-val-${c.id}" style="font-size:18px;font-weight:900;color:var(--deep);min-width:36px;text-align:center;">${litres}</span>
-                    <button onclick="vendorAdjust('${c.id}','${vid}',${mid},${c.dailyLitres},+0.5)"
-                      style="width:32px;height:32px;border-radius:50%;border:2px solid var(--border);background:var(--milk-off);font-size:18px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--green);line-height:1;flex-shrink:0;">+</button>
-                  </div>
-                  <button class="card-glass-btn" onclick="vendorToggle('${c.id}','${vid}',${mid},${c.dailyLitres})" id="vglass-${c.id}">
-                    <div class="glass-wrap" style="width:44px;height:56px;">${milkGlassSVG(done)}</div>
-                    <span class="card-glass-label" style="color:${done?'var(--green)':'var(--muted)'};">${done?'✓ Done':'Deliver'}</span>
-                  </button>
-                </div>
-              </div>`;
-          }).join('')}</div>`
-      }
     </div>`;
-}
-
-function vendorAdjust(custId, vendorId, milkmanId, defaultLitres, delta) {
-  const valEl = document.getElementById('vlitres-val-'+custId);
-  if(!valEl) return;
-  let current = parseFloat(valEl.textContent)||defaultLitres;
-  current = Math.max(0.5, Math.round((current + delta) * 2) / 2);
-  valEl.textContent = current;
-  // If already delivered today, update record live
-  const today = todayStr();
-  let deliveries = DB.get('deliveries');
-  const idx = deliveries.findIndex(d=>d.id===`del_${today}_${custId}`);
-  if(idx>=0) {
-    deliveries[idx].litres = current;
-    DB.set('deliveries', deliveries);
-    const lbl = document.getElementById('vlitres-label-'+custId);
-    if(lbl) lbl.textContent = current+' L today';
-  }
-}
-
-function vendorToggle(custId, vendorId, milkmanId, defaultLitres) {
-  const valEl = document.getElementById('vlitres-val-'+custId);
-  const litres = valEl ? parseFloat(valEl.textContent)||defaultLitres : defaultLitres;
-  const today  = todayStr();
-  let deliveries = DB.get('deliveries');
-  const recId  = `del_${today}_${custId}`;
-  const idx    = deliveries.findIndex(d=>d.id===recId);
-  const isDone = idx >= 0;
-
-  if(isDone) {
-    deliveries.splice(idx, 1);
-  } else {
-    deliveries.push({ id:recId, date:today, customerId:custId,
-      milkmanId:milkmanId||'', vendorId, litres });
-  }
-  DB.set('deliveries', deliveries);
-
-  const card   = document.getElementById('vcard-'+custId);
-  const glsBtn = document.getElementById('vglass-'+custId);
-  const lbl    = document.getElementById('vlitres-label-'+custId);
-
-  if(isDone) {
-    card?.classList.remove('card-done');
-    if(glsBtn){ glsBtn.querySelector('.glass-wrap').innerHTML=milkGlassSVG(false); glsBtn.querySelector('.card-glass-label').textContent='Deliver'; glsBtn.querySelector('.card-glass-label').style.color='var(--muted)'; }
-    if(lbl){ lbl.style.color='var(--accent)'; }
-  } else {
-    card?.classList.add('card-done');
-    if(glsBtn){ glsBtn.querySelector('.glass-wrap').innerHTML=milkGlassSVG(true); glsBtn.querySelector('.card-glass-label').textContent='✓ Done'; glsBtn.querySelector('.card-glass-label').style.color='var(--green)'; }
-    if(lbl){ lbl.textContent=litres+' L today'; lbl.style.color='var(--green)'; }
-  }
-  // Refresh dashboard stats
-  document.getElementById('page-v-dash').innerHTML = vendorDashHTML();
-  attachCustListeners();
 }
 
 function vendorShopHTML() {
   const v = currentUser;
   return `
-    <div class="page-header"><div class="page-title">Shop Details</div><div class="page-sub">Manage your dairy shop information</div></div>
-    <div class="card" style="max-width:560px;">
-      <div class="card-title">Shop Information</div>
-      <div class="form-grid single">
-        <div class="field-group"><label>Shop Name</label><input id="sh-name" value="${v.shopName||''}" /></div>
-        <div class="field-group"><label>Owner Name</label><input id="sh-owner" value="${v.name||''}" /></div>
-        <div class="field-group"><label>Phone</label><input id="sh-phone" value="${v.phone||''}" /></div>
-        <div class="field-group"><label>Address</label><input id="sh-addr" value="${v.address||''}" /></div>
-      </div>
+    <div class="page-header"><div class="page-title">Shop Details</div><div class="page-sub">Update your shop information</div></div>
+    <div class="card" style="max-width:500px;">
+      <div class="field-group"><label>Shop Name</label><input id="s-shop" value="${v.shop_name||v.shopName||''}"/></div>
+      <div class="field-group"><label>Address</label><input id="s-addr" value="${v.address||''}"/></div>
+      <div class="field-group"><label>Price per Litre (₹)</label><input id="s-price" type="number" value="${v.price_per_litre||v.pricePerLitre||60}"/></div>
       <button class="btn-sm btn-accent" onclick="saveShop()">Save Changes</button>
+    </div>
+    <div class="card" style="max-width:500px;">
+      <div class="card-title">Your Vendor Code</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px;">Share this with customers and milkmen to join your shop.</p>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:28px;font-weight:700;color:var(--accent);letter-spacing:6px;">${v.id}</div>
     </div>`;
 }
 
-function saveShop() {
-  let vendors = DB.get('vendors');
-  const idx = vendors.findIndex(v=>v.id===currentUser.id);
-  vendors[idx].shopName = document.getElementById('sh-name').value;
-  vendors[idx].name = document.getElementById('sh-owner').value;
-  vendors[idx].address = document.getElementById('sh-addr').value;
-  DB.set('vendors', vendors);
-  currentUser = vendors[idx];
-  document.getElementById('nav-name').textContent = currentUser.name;
-  toast('Shop details saved!');
+async function saveShop() {
+  const shop_name = document.getElementById('s-shop').value.trim();
+  const address = document.getElementById('s-addr').value.trim();
+  const price_per_litre = parseFloat(document.getElementById('s-price').value)||60;
+  try {
+    const res = await API.put('/vendor/'+currentUser.id+'/shop', { shop_name, name: currentUser.name, address });
+    currentUser = { ...currentUser, ...res };
+    _cache.vendors = [currentUser];
+    toast('Shop updated!');
+  } catch(e) { toast('Error: '+e.message); }
 }
 
 function vendorMilkmenHTML() {
-  const milkmen = DB.get('milkmen').filter(m=>m.vendorId===currentUser.id);
+  const milkmen = _cache.milkmen || [];
+  const customers = _cache.customers || [];
   const rows = milkmen.map(m=>{
-    const custs = DB.get('customers').filter(c=>c.milkmanId===m.id).length;
+    const custCount = customers.filter(c=>c.milkman_id===m.id||c.milkmanId===m.id).length;
     return `<tr>
       <td><strong>${m.name}</strong></td>
       <td>${m.phone}</td>
-      <td><span class="pill pill-blue" style="font-family:'JetBrains Mono',monospace;">${m.uniqueCode}</span></td>
-      <td>${custs} customers</td>
-      <td><span class="pill ${m.active?'pill-green':'pill-red'}">${m.active?'Active':'Inactive'}</span></td>
+      <td><span style="font-family:'JetBrains Mono',monospace;font-weight:700;letter-spacing:2px;">${m.unique_code||m.uniqueCode||''}</span></td>
+      <td>${custCount}</td>
+      <td><span class="pill pill-green">Active</span></td>
       <td><button class="btn-sm btn-red remove-mm-btn" data-id="${m.id}">Remove</button></td>
     </tr>`;
   }).join('');
@@ -1087,7 +953,7 @@ function vendorMilkmenHTML() {
       </div>
       <div class="card">
         <div class="card-title">Add via Unique Code</div>
-        <p style="font-size:13px;color:var(--muted);margin-bottom:14px;">Share the unique 6-digit code with your milkman. They can use it to join your shop.</p>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:14px;">Share the unique 6-digit code with your milkman.</p>
         <div class="field-group"><label>Enter Milkman's Code</label><input id="mm-code" placeholder="e.g. MK1234" maxlength="6" style="font-family:'JetBrains Mono',monospace;letter-spacing:4px;"/></div>
         <button class="btn-sm btn-blue" onclick="addMilkmanByCode()">Add by Code</button>
       </div>
@@ -1099,39 +965,41 @@ function vendorMilkmenHTML() {
     </div>`;
 }
 
-function addMilkman() {
+async function addMilkman() {
   const name = document.getElementById('mm-name').value.trim();
   const phone = document.getElementById('mm-phone').value.trim();
   if (!name||!/^\d{10}$/.test(phone)) { toast('Enter valid name and phone'); return; }
-  const milkmen = DB.get('milkmen');
-  if (milkmen.find(m=>m.phone===phone)) { toast('Milkman already exists'); return; }
-  const code = 'MK'+Math.floor(1000+Math.random()*9000);
-  milkmen.push({ id:'mm'+Date.now(), name, phone, vendorId:currentUser.id, uniqueCode:code, active:true });
-  DB.set('milkmen', milkmen);
-  toast('Milkman added! Code: '+code);
-  document.getElementById('page-v-milkmen').innerHTML = vendorMilkmenHTML();
-  attachMilkmanRemoveListeners();
+  try {
+    const res = await API.post('/vendor/'+currentUser.id+'/milkmen', { name, phone });
+    const mm = res.milkman || res;
+    _cache.milkmen.push({...mm, phone, name, unique_code: mm.uniqueCode||mm.unique_code, uniqueCode: mm.uniqueCode||mm.unique_code});
+    toast('Milkman added! Code: '+(mm.uniqueCode||mm.unique_code));
+    document.getElementById('page-v-milkmen').innerHTML = vendorMilkmenHTML();
+    attachMilkmanRemoveListeners();
+  } catch(e) { toast('Error: '+e.message); }
 }
 
-function addMilkmanByCode() {
+async function addMilkmanByCode() {
   const code = document.getElementById('mm-code').value.trim().toUpperCase();
-  const milkmen = DB.get('milkmen');
-  const mm = milkmen.find(m=>m.uniqueCode===code);
-  if (!mm) { toast('No milkman found with this code'); return; }
-  const idx = milkmen.findIndex(m=>m.uniqueCode===code);
-  milkmen[idx].vendorId = currentUser.id;
-  DB.set('milkmen', milkmen);
-  toast(mm.name+' linked to your shop!');
-  document.getElementById('page-v-milkmen').innerHTML = vendorMilkmenHTML();
-  attachMilkmanRemoveListeners();
+  try {
+    const res = await API.post('/vendor/'+currentUser.id+'/milkmen/link', { code: code });
+    const mm = res.milkman || res;
+    const existing = _cache.milkmen.findIndex(m=>m.id===mm.id);
+    if (existing >= 0) _cache.milkmen[existing] = mm; else _cache.milkmen.push(mm);
+    toast(mm.name+' linked to your shop!');
+    document.getElementById('page-v-milkmen').innerHTML = vendorMilkmenHTML();
+    attachMilkmanRemoveListeners();
+  } catch(e) { toast('No milkman found with this code'); }
 }
 
-function removeMilkman(id) {
-  let milkmen = DB.get('milkmen').filter(m=>m.id!==id);
-  DB.set('milkmen', milkmen);
-  toast('Milkman removed');
-  document.getElementById('page-v-milkmen').innerHTML = vendorMilkmenHTML();
-  attachMilkmanRemoveListeners();
+async function removeMilkman(id) {
+  try {
+    await API.delete('/vendor/'+currentUser.id+'/milkmen/'+id);
+    _cache.milkmen = _cache.milkmen.filter(m=>m.id!==id);
+    toast('Milkman removed');
+    document.getElementById('page-v-milkmen').innerHTML = vendorMilkmenHTML();
+    attachMilkmanRemoveListeners();
+  } catch(e) { toast('Error: '+e.message); }
 }
 
 function attachMilkmanRemoveListeners() {
@@ -1144,66 +1012,58 @@ function attachMilkmanRemoveListeners() {
 }
 
 function vendorCustomersHTML() {
-  const customers = DB.get('customers').filter(c=>c.vendorId===currentUser.id);
-  const milkmen = DB.get('milkmen').filter(m=>m.vendorId===currentUser.id);
-  const deliveries = DB.get('deliveries').filter(d=>d.vendorId===currentUser.id);
+  const customers = _cache.customers || [];
+  const milkmen = _cache.milkmen || [];
+  const deliveries = _cache.deliveries || [];
   const month = thisMonth();
 
   const rows = customers.map(c=>{
-    const mm = milkmen.find(m=>m.id===c.milkmanId);
+    const mmId = c.milkman_id||c.milkmanId;
+    const mm = milkmen.find(m=>m.id===mmId);
     const isAssigned = !!mm;
 
     const ddOpts = [
       `<option value="">— Unassigned —</option>`,
-      ...milkmen.map(m=>`<option value="${m.id}" ${m.id===c.milkmanId?'selected':''}>${m.name}</option>`)
+      ...milkmen.map(m=>`<option value="${m.id}" ${m.id===mmId?'selected':''}>${m.name}</option>`)
     ].join('');
 
     const mmCell = isAssigned
       ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
            <span class="pill pill-blue mm-label-${c.id}">${mm.name}</span>
            <button class="btn-sm btn-outline mm-edit-toggle" data-id="${c.id}" style="padding:4px 10px;font-size:11px;">Edit</button>
-           <select class="mm-inline-select" data-id="${c.id}" style="display:none;padding:6px 8px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:'Sora',sans-serif;background:var(--cream);color:var(--deep);outline:none;cursor:pointer;">${ddOpts}</select>
+           <select class="mm-inline-select" data-id="${c.id}" style="display:none;padding:6px 8px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;">${ddOpts}</select>
            <button class="btn-sm btn-green mm-save-btn" data-id="${c.id}" style="display:none;padding:4px 10px;font-size:11px;">Save</button>
          </div>`
       : `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
            <span class="pill pill-red mm-label-${c.id}" style="font-size:11px;">Unassigned</span>
            <button class="btn-sm btn-accent mm-edit-toggle" data-id="${c.id}" style="padding:4px 10px;font-size:11px;">Assign</button>
-           <select class="mm-inline-select" data-id="${c.id}" style="display:none;padding:6px 8px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:'Sora',sans-serif;background:var(--cream);color:var(--deep);outline:none;cursor:pointer;">${ddOpts}</select>
+           <select class="mm-inline-select" data-id="${c.id}" style="display:none;padding:6px 8px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;">${ddOpts}</select>
            <button class="btn-sm btn-green mm-save-btn" data-id="${c.id}" style="display:none;padding:4px 10px;font-size:11px;">Save</button>
          </div>`;
 
     const rateCell = `<div style="display:flex;align-items:center;gap:6px;">
-           <span class="rate-label-${c.id}" style="font-weight:600;">₹${c.ratePerLitre||60}/L</span>
+           <span class="rate-label-${c.id}" style="font-weight:600;">₹${c.rate_per_litre||c.ratePerLitre||60}/L</span>
            <button class="btn-sm btn-outline rate-edit-toggle" data-id="${c.id}" style="padding:3px 9px;font-size:11px;">Edit</button>
-           <input class="litre-input rate-inline-input" data-id="${c.id}" type="number" value="${c.ratePerLitre||60}" min="1" style="display:none;width:64px;" />
+           <input class="litre-input rate-inline-input" data-id="${c.id}" type="number" value="${c.rate_per_litre||c.ratePerLitre||60}" min="1" style="display:none;width:64px;" />
            <button class="btn-sm btn-green rate-save-btn" data-id="${c.id}" style="display:none;padding:3px 9px;font-size:11px;">Save</button>
          </div>`;
 
-    // Payment status for current month
-    const monthDels = deliveries.filter(d=>d.customerId===c.id && d.date.startsWith(month));
-    const totalLitres = monthDels.reduce((s,d)=>s+d.litres,0);
-    const totalAmount = totalLitres * (c.ratePerLitre||60);
+    const monthDels = deliveries.filter(d=>d.date&&d.date.startsWith(month)&&(d.customer_id===c.id||d.customerId===c.id));
+    const totalLitres = monthDels.reduce((s,d)=>s+(d.litres||0),0);
+    const totalAmount = totalLitres * (c.rate_per_litre||c.ratePerLitre||60);
     const isPaid = c.payments && c.payments[month] === true;
 
     const payCell = totalAmount === 0
       ? `<span style="font-size:12px;color:var(--muted);">No deliveries</span>`
       : isPaid
-        ? `<div style="display:flex;align-items:center;gap:6px;">
-             <span class="pill pill-green">✓ Paid</span>
-             <span style="font-size:12px;color:var(--muted);">₹${totalAmount.toFixed(0)}</span>
-             <button class="btn-sm btn-outline pay-toggle-btn" data-id="${c.id}" data-month="${month}" style="padding:3px 8px;font-size:11px;">Undo</button>
-           </div>`
-        : `<div style="display:flex;align-items:center;gap:6px;">
-             <span class="pill pill-red">Unpaid</span>
-             <button class="btn-sm btn-outline view-bill-btn" data-id="${c.id}" data-month="${month}" style="padding:3px 8px;font-size:11px;color:var(--blue);border-color:var(--blue);">₹${totalAmount.toFixed(0)} · Bill</button>
-             <button class="btn-sm btn-green pay-toggle-btn" data-id="${c.id}" data-month="${month}" style="padding:3px 8px;font-size:11px;">Mark Paid</button>
-           </div>`;
+        ? `<div style="display:flex;align-items:center;gap:6px;"><span class="pill pill-green">✓ Paid</span><span style="font-size:12px;color:var(--muted);">₹${totalAmount.toFixed(0)}</span><button class="btn-sm btn-outline pay-toggle-btn" data-id="${c.id}" data-month="${month}" style="padding:3px 8px;font-size:11px;">Undo</button></div>`
+        : `<div style="display:flex;align-items:center;gap:6px;"><span class="pill pill-red">Unpaid</span><button class="btn-sm btn-outline view-bill-btn" data-id="${c.id}" data-month="${month}" style="padding:3px 8px;font-size:11px;color:var(--blue);border-color:var(--blue);">₹${totalAmount.toFixed(0)} · Bill</button><button class="btn-sm btn-green pay-toggle-btn" data-id="${c.id}" data-month="${month}" style="padding:3px 8px;font-size:11px;">Mark Paid</button></div>`;
 
     return `<tr>
       <td><strong>${c.name}</strong><br><span style="font-size:12px;color:var(--muted);">${c.address||''}</span></td>
       <td>${c.phone}</td>
       <td style="min-width:180px;">${mmCell}</td>
-      <td>${c.dailyLitres} L/day</td>
+      <td>${c.daily_litres||c.dailyLitres||1} L/day</td>
       <td style="min-width:140px;">${rateCell}</td>
       <td style="min-width:180px;">${payCell}</td>
       <td><button class="btn-sm btn-red remove-cust-btn" data-id="${c.id}">Remove</button></td>
@@ -1212,13 +1072,13 @@ function vendorCustomersHTML() {
 
   const mmOpts = milkmen.map(m=>`<option value="${m.id}">${m.name}</option>`).join('');
   const unpaidCount = customers.filter(c=>{
-    const monthDels = deliveries.filter(d=>d.customerId===c.id && d.date.startsWith(month));
-    const amt = monthDels.reduce((s,d)=>s+d.litres,0) * (c.ratePerLitre||60);
+    const monthDels = deliveries.filter(d=>d.date&&d.date.startsWith(month)&&(d.customer_id===c.id||d.customerId===c.id));
+    const amt = monthDels.reduce((s,d)=>s+(d.litres||0),0) * (c.rate_per_litre||c.ratePerLitre||60);
     return amt > 0 && !(c.payments && c.payments[month]);
   }).length;
 
   return `
-    <div class="page-header"><div class="page-title">Customers</div><div class="page-sub">Manage your customer list — ${new Date().toLocaleDateString('en-IN',{month:'long',year:'numeric'})}</div></div>
+    <div class="page-header"><div class="page-title">Customers</div><div class="page-sub">Manage your customer list</div></div>
     <div class="card" style="max-width:640px;margin-bottom:24px;">
       <div class="card-title">Add Customer</div>
       <div class="form-grid">
@@ -1235,7 +1095,7 @@ function vendorCustomersHTML() {
       <div class="card-header">
         <div class="card-title" style="margin:0;">Customers (${customers.length})</div>
         <div style="display:flex;gap:8px;align-items:center;">
-          <span class="pill pill-blue" style="font-size:11px;">${customers.filter(c=>c.milkmanId&&milkmen.find(m=>m.id===c.milkmanId)).length} assigned</span>
+          <span class="pill pill-blue" style="font-size:11px;">${customers.filter(c=>{const mmId=c.milkman_id||c.milkmanId;return mmId&&milkmen.find(m=>m.id===mmId)}).length} assigned</span>
           ${unpaidCount>0?`<span class="pill pill-red" style="font-size:11px;">${unpaidCount} unpaid</span>`:'<span class="pill pill-green" style="font-size:11px;">All paid</span>'}
         </div>
       </div>
@@ -1249,76 +1109,81 @@ function refreshCustomerPage() {
   attachCustListeners();
 }
 
-function addCustomer() {
+async function addCustomer() {
   const name=document.getElementById('c-name').value.trim();
   const phone=document.getElementById('c-phone').value.trim();
-  const addr=document.getElementById('c-addr').value.trim();
-  const litres=parseFloat(document.getElementById('c-litres').value)||1;
-  const rate=parseFloat(document.getElementById('c-rate').value)||60;
-  const mmId=document.getElementById('c-mm').value;
+  const address=document.getElementById('c-addr').value.trim();
+  const daily_litres=parseFloat(document.getElementById('c-litres').value)||1;
+  const rate_per_litre=parseFloat(document.getElementById('c-rate').value)||60;
+  const milkman_id=document.getElementById('c-mm').value||null;
   if(!name||!/^\d{10}$/.test(phone)){toast('Enter valid name and phone');return;}
-  let custs=DB.get('customers');
-  if(custs.find(c=>c.phone===phone)){toast('Customer already exists');return;}
-  custs.push({id:'c'+Date.now(),name,phone,vendorId:currentUser.id,milkmanId:mmId,dailyLitres:litres,ratePerLitre:rate,address:addr,active:true});
-  DB.set('customers',custs);
-  toast('Customer added!');
-  refreshCustomerPage();
+  try {
+    const res = await API.post('/vendor/'+currentUser.id+'/customers', { name, phone, address, daily_litres, rate_per_litre, milkman_id });
+    const cBase = res.customer || res;
+    const c = { ...cBase, name, phone, address, daily_litres, rate_per_litre, milkman_id,
+                 dailyLitres: daily_litres, ratePerLitre: rate_per_litre,
+                 milkmanId: milkman_id, vendorId: currentUser.id };
+    _cache.customers.push(c);
+    toast('Customer added!');
+    refreshCustomerPage();
+  } catch(e) { toast('Error: '+e.message); }
 }
 
-function removeCustomer(id) {
-  let custs=DB.get('customers').filter(c=>c.id!==id);
-  DB.set('customers',custs);
-  toast('Customer removed');
-  refreshCustomerPage();
+async function removeCustomer(id) {
+  try {
+    await API.delete('/vendor/'+currentUser.id+'/customers/'+id);
+    _cache.customers = _cache.customers.filter(c=>c.id!==id);
+    toast('Customer removed');
+    refreshCustomerPage();
+  } catch(e) { toast('Error: '+e.message); }
 }
 
-function assignMilkman(custId, milkmanId) {
-  let custs = DB.get('customers');
-  const idx = custs.findIndex(c=>c.id===custId);
-  if(idx<0) return;
-  custs[idx].milkmanId = milkmanId;
-  DB.set('customers', custs);
-  const milkmen = DB.get('milkmen');
-  const mm = milkmen.find(m=>m.id===milkmanId);
-  toast(mm ? `Assigned to ${mm.name}` : 'Milkman unassigned');
-  refreshCustomerPage();
+async function assignMilkman(custId, milkmanId) {
+  try {
+    await API.patch('/vendor/'+currentUser.id+'/customers/'+custId, { milkman_id: milkmanId||null });
+    const idx = _cache.customers.findIndex(x=>x.id===custId);
+    if(idx>=0) { _cache.customers[idx].milkman_id = milkmanId; _cache.customers[idx].milkmanId = milkmanId; }
+    const mm = _cache.milkmen.find(m=>m.id===milkmanId);
+    toast(mm ? `Assigned to ${mm.name}` : 'Milkman unassigned');
+    refreshCustomerPage();
+  } catch(e) { toast('Error: '+e.message); }
 }
 
-function togglePayment(custId, month) {
-  let custs = DB.get('customers');
-  const idx = custs.findIndex(c=>c.id===custId);
-  if(idx<0) return;
-  if(!custs[idx].payments) custs[idx].payments = {};
-  custs[idx].payments[month] = !custs[idx].payments[month];
-  DB.set('customers', custs);
-  const isPaid = custs[idx].payments[month];
-  toast(isPaid ? '✓ Marked as Paid' : 'Marked as Unpaid');
-  refreshCustomerPage();
+async function togglePayment(custId, month) {
+  try {
+    const c = _cache.customers.find(x=>x.id===custId);
+    const isPaid = c?.payments?.[month];
+    await API.post('/vendor/'+currentUser.id+'/payment/toggle', { customer_id: custId, month });
+    const idx = _cache.customers.findIndex(x=>x.id===custId);
+    if(idx>=0) {
+      if(!_cache.customers[idx].payments) _cache.customers[idx].payments = {};
+      _cache.customers[idx].payments[month] = !isPaid;
+    }
+    toast(!isPaid ? '✓ Marked as Paid' : 'Marked as Unpaid');
+    refreshCustomerPage();
+  } catch(e) { toast('Error: '+e.message); }
 }
 
 function showCustomerBill(custId, month) {
-  const custs = DB.get('customers');
-  const c = custs.find(x=>x.id===custId);
+  const c = _cache.customers.find(x=>x.id===custId);
   if(!c) return;
-  const vendor = DB.get('vendors').find(v=>v.id===currentUser.id);
-  const milkman = DB.get('milkmen').find(m=>m.id===c.milkmanId);
-  const deliveries = DB.get('deliveries').filter(d=>d.customerId===custId && d.date.startsWith(month));
-  const rate = c.ratePerLitre||60;
-  const totalLitres = deliveries.reduce((s,d)=>s+d.litres,0);
+  const vendor = currentUser;
+  const milkman = _cache.milkmen.find(m=>m.id===(c.milkman_id||c.milkmanId));
+  const deliveries = _cache.deliveries.filter(d=>d.date&&d.date.startsWith(month)&&(d.customer_id===custId||d.customerId===custId));
+  const rate = c.rate_per_litre||c.ratePerLitre||60;
+  const totalLitres = deliveries.reduce((s,d)=>s+(d.litres||0),0);
   const totalAmount = totalLitres * rate;
   const monthName = new Date(month+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
 
   const rows = deliveries.map(d=>`
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;font-size:13px;padding:5px 0;border-bottom:1px solid rgba(26,18,8,0.05);">
-      <span>${d.date}</span>
-      <span style="text-align:center;">${d.litres}L × ₹${rate}</span>
-      <span style="text-align:right;">₹${(d.litres*rate).toFixed(2)}</span>
+      <span>${d.date}</span><span style="text-align:center;">${d.litres}L × ₹${rate}</span><span style="text-align:right;">₹${((d.litres||0)*rate).toFixed(2)}</span>
     </div>`).join('');
 
   openModal(`Bill — ${c.name}`, `
     <div class="bill-box">
       <div class="bill-header">
-        <div style="font-size:18px;font-weight:700;margin-bottom:4px;">🥛 ${vendor?.shopName||'Dairy'}</div>
+        <div style="font-size:18px;font-weight:700;margin-bottom:4px;">🥛 ${vendor?.shop_name||vendor?.shopName||'Dairy'}</div>
         <div style="font-size:12px;color:var(--muted);">${vendor?.address||''}</div>
         <div style="margin-top:8px;font-size:13px;font-weight:600;">${monthName}</div>
         <div style="font-size:12px;color:var(--muted);">Customer: ${c.name} · ${c.phone}</div>
@@ -1341,31 +1206,24 @@ function showCustomerBill(custId, month) {
 }
 
 function attachCustListeners() {
-  // Remove buttons
   document.querySelectorAll('.remove-cust-btn').forEach(btn=>{
     btn.addEventListener('click', function() {
       const id = this.getAttribute('data-id');
       confirmAction('Remove this customer?', () => removeCustomer(id));
     });
   });
-
-  // Edit/Assign toggle buttons — show dropdown + save, hide pill + toggle
   document.querySelectorAll('.mm-edit-toggle').forEach(btn=>{
     btn.addEventListener('click', function() {
       const id = this.getAttribute('data-id');
-      // Hide this button and the label pill
       this.style.display = 'none';
       const label = document.querySelector(`.mm-label-${id}`);
       if(label) label.style.display = 'none';
-      // Show dropdown and save button
       const sel = document.querySelector(`.mm-inline-select[data-id="${id}"]`);
       const saveBtn = document.querySelector(`.mm-save-btn[data-id="${id}"]`);
       if(sel) sel.style.display = 'inline-block';
       if(saveBtn) saveBtn.style.display = 'inline-block';
     });
   });
-
-  // Save (assign) buttons
   document.querySelectorAll('.mm-save-btn').forEach(btn=>{
     btn.addEventListener('click', function() {
       const id = this.getAttribute('data-id');
@@ -1374,8 +1232,6 @@ function attachCustListeners() {
       assignMilkman(id, milkmanId);
     });
   });
-
-  // Rate edit toggle
   document.querySelectorAll('.rate-edit-toggle').forEach(btn=>{
     btn.addEventListener('click', function() {
       const id = this.getAttribute('data-id');
@@ -1388,21 +1244,20 @@ function attachCustListeners() {
       if(sav) sav.style.display = 'inline-block';
     });
   });
-
-  // Rate save
   document.querySelectorAll('.rate-save-btn').forEach(btn=>{
-    btn.addEventListener('click', function() {
+    btn.addEventListener('click', async function() {
       const id = this.getAttribute('data-id');
       const inp = document.querySelector(`.rate-inline-input[data-id="${id}"]`);
       const newRate = parseFloat(inp?.value)||60;
-      let custs = DB.get('customers');
-      const idx = custs.findIndex(c=>c.id===id);
-      if(idx>=0){ custs[idx].ratePerLitre = newRate; DB.set('customers', custs); }
-      toast(`Rate updated to ₹${newRate}/L`);
-      refreshCustomerPage();
+      try {
+        await API.patch('/vendor/'+currentUser.id+'/customers/'+id, { rate_per_litre: newRate });
+        const idx = _cache.customers.findIndex(x=>x.id===id);
+        if(idx>=0) { _cache.customers[idx].rate_per_litre = newRate; _cache.customers[idx].ratePerLitre = newRate; }
+        toast(`Rate updated to ₹${newRate}/L`);
+        refreshCustomerPage();
+      } catch(e) { toast('Error: '+e.message); }
     });
   });
-  // Payment toggle (Mark Paid / Undo)
   document.querySelectorAll('.pay-toggle-btn').forEach(btn=>{
     btn.addEventListener('click', function() {
       const id = this.getAttribute('data-id');
@@ -1410,8 +1265,6 @@ function attachCustListeners() {
       togglePayment(id, month);
     });
   });
-
-  // View bill button
   document.querySelectorAll('.view-bill-btn').forEach(btn=>{
     btn.addEventListener('click', function() {
       const id = this.getAttribute('data-id');
@@ -1421,29 +1274,28 @@ function attachCustListeners() {
   });
 }
 
-// legacy alias so buildVendorUI call still works
 function attachCustRemoveListeners() { attachCustListeners(); }
 
 function vendorDeliveriesHTML() {
-  const deliveries = DB.get('deliveries').filter(d=>d.vendorId===currentUser.id);
-  const customers = DB.get('customers');
+  const deliveries = _cache.deliveries || [];
+  const customers = _cache.customers || [];
   const custMap = {}; customers.forEach(c=>custMap[c.id]=c);
   const today = todayStr();
   const todayDels = deliveries.filter(d=>d.date===today);
-  const monthDels = deliveries.filter(d=>d.date.startsWith(thisMonth()));
-  const monthRevenue = monthDels.reduce((s,d)=>s+d.litres*(custMap[d.customerId]?.ratePerLitre||60),0);
+  const monthDels = deliveries.filter(d=>d.date&&d.date.startsWith(thisMonth()));
+  const monthRevenue = monthDels.reduce((s,d)=>s+(d.litres||0)*(custMap[d.customer_id||d.customerId]?.rate_per_litre||custMap[d.customer_id||d.customerId]?.ratePerLitre||60),0);
 
   const rows = deliveries.slice(-30).reverse().map(d=>{
-    const c = custMap[d.customerId];
-    const rate = c?.ratePerLitre||60;
-    return `<tr><td>${d.date}</td><td>${c?.name||d.customerId}</td><td>${d.litres} L</td><td>₹${(d.litres*rate).toFixed(0)}</td></tr>`;
+    const c = custMap[d.customer_id||d.customerId];
+    const rate = c?.rate_per_litre||c?.ratePerLitre||60;
+    return `<tr><td>${d.date}</td><td>${c?.name||'Unknown'}</td><td>${d.litres} L</td><td>₹${((d.litres||0)*rate).toFixed(0)}</td></tr>`;
   }).join('');
 
   return `
     <div class="page-header"><div class="page-title">Deliveries</div><div class="page-sub">All delivery records</div></div>
     <div class="stats-grid" style="margin-bottom:24px;">
-      <div class="stat-card"><div class="stat-label">Today's Litres</div><div class="stat-val stat-green">${todayDels.reduce((s,d)=>s+d.litres,0).toFixed(1)}<span class="stat-unit"> L</span></div></div>
-      <div class="stat-card"><div class="stat-label">Month Litres</div><div class="stat-val stat-blue">${monthDels.reduce((s,d)=>s+d.litres,0).toFixed(1)}<span class="stat-unit"> L</span></div></div>
+      <div class="stat-card"><div class="stat-label">Today's Litres</div><div class="stat-val stat-green">${todayDels.reduce((s,d)=>s+(d.litres||0),0).toFixed(1)}<span class="stat-unit"> L</span></div></div>
+      <div class="stat-card"><div class="stat-label">Month Litres</div><div class="stat-val stat-blue">${monthDels.reduce((s,d)=>s+(d.litres||0),0).toFixed(1)}<span class="stat-unit"> L</span></div></div>
       <div class="stat-card"><div class="stat-label">Month Revenue</div><div class="stat-val stat-accent">₹${monthRevenue.toLocaleString('en-IN',{maximumFractionDigits:0})}</div></div>
     </div>
     <div class="card">
@@ -1458,7 +1310,7 @@ function buildMilkmanUI(sb, ct) {
     <div class="sidebar-milk-top">
       <div style="font-size:26px;margin-bottom:6px;">🛺</div>
       <div class="sidebar-shop-name">${currentUser.name}</div>
-      <div class="sidebar-shop-sub">Code: <strong style="font-family:'JetBrains Mono',monospace;">${currentUser.uniqueCode||''}</strong></div>
+      <div class="sidebar-shop-sub">Code: <strong style="font-family:'JetBrains Mono',monospace;">${currentUser.unique_code||currentUser.uniqueCode||''}</strong></div>
     </div>
     <div class="sidebar-section">
       ${navItem('mm-dash','📊','Dashboard',"showPage('mm-dash')")}
@@ -1473,119 +1325,49 @@ function buildMilkmanUI(sb, ct) {
 }
 
 function milkmanDashHTML() {
-  const myCustomers = DB.get('customers').filter(c=>c.milkmanId===currentUser.id && c.active);
+  const myCustomers = _cache.customers || [];
   const today = todayStr();
-  const todayDels = DB.get('deliveries').filter(d=>d.milkmanId===currentUser.id && d.date===today);
-  const deliveredSet = new Set(todayDels.map(d=>d.customerId));
-  const monthDels = DB.get('deliveries').filter(d=>d.milkmanId===currentUser.id && d.date.startsWith(thisMonth()));
-  const vendor = DB.get('vendors').find(v=>v.id===currentUser.vendorId);
+  const todayDels = (_cache.deliveries||[]).filter(d=>d.date===today);
+  const deliveredSet = new Set(todayDels.map(d=>d.customer_id||d.customerId));
+  const monthDels = (_cache.deliveries||[]).filter(d=>d.date&&d.date.startsWith(thisMonth()));
+  const vendor = { shop_name: currentUser.vendor_shop_name || 'Your dairy' };
   const displayDate = new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
 
   const cards = myCustomers.map((c, i)=>{
-    const done     = deliveredSet.has(c.id);
-    const todayDel = todayDels.find(d=>d.customerId===c.id);
-    const litres   = todayDel ? todayDel.litres : c.dailyLitres;
+    const done = deliveredSet.has(c.id);
+    const glassColor = done ? 'var(--green)' : 'var(--muted)';
+    const glassLabel = done ? '✓ Done' : 'Tap';
+    const vendorId = c.vendor_id||c.vendorId||'';
     return `
       <div class="cust-delivery-card ${done?'card-done':''}" id="card-${c.id}" style="z-index:${i + 1};">
         <div class="card-info">
           <div class="card-cust-name">${c.name}</div>
           <div class="card-cust-meta">${c.phone}</div>
           ${c.address ? `<div class="card-cust-meta">${c.address}</div>` : ''}
-          <div class="card-litres" id="litres-label-${c.id}" style="color:${done?'var(--green)':'var(--accent)'};">${litres} L today</div>
+          <div class="card-litres">${c.daily_litres||c.dailyLitres||1} L/day</div>
         </div>
-        <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
-          <!-- + / - controls -->
-          <div style="display:flex;align-items:center;gap:8px;">
-            <button onclick="adjustLitres('${c.id}','${c.vendorId}',${c.dailyLitres},-0.5)"
-              style="width:32px;height:32px;border-radius:50%;border:2px solid var(--border);background:var(--milk-off);font-size:18px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--red);line-height:1;">−</button>
-            <span id="litres-val-${c.id}" style="font-size:18px;font-weight:900;color:var(--deep);min-width:36px;text-align:center;">${litres}</span>
-            <button onclick="adjustLitres('${c.id}','${c.vendorId}',${c.dailyLitres},+0.5)"
-              style="width:32px;height:32px;border-radius:50%;border:2px solid var(--border);background:var(--milk-off);font-size:18px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--green);line-height:1;">+</button>
-          </div>
-          <!-- Glass tap button -->
-          <button class="card-glass-btn" onclick="toggleDelivery('${c.id}',parseFloat(document.getElementById('litres-val-${c.id}').textContent),'${c.vendorId}')" id="glass-btn-${c.id}">
-            <div class="glass-wrap" style="width:44px;height:56px;">${milkGlassSVG(done)}</div>
-            <span class="card-glass-label" style="color:${done?'var(--green)':'var(--muted)'};">${done?'✓ Done':'Deliver'}</span>
-          </button>
-        </div>
-      </div>`;
-  }).join('');
-
-  return `
-    <div class="page-header">
-      <div class="page-title">My Route</div>
-      <div class="page-sub">${displayDate} &nbsp;·&nbsp; ${vendor?.shopName||'Your dairy'}</div>
-    </div>
-    <div style="display:flex;gap:12px;margin-bottom:24px;">
-      <div class="stat-card" style="flex:1;padding:14px 18px;">
-        <div class="stat-label">Total</div>
-        <div class="stat-val" style="font-size:24px;">${myCustomers.length}</div>
-      </div>
-      <div class="stat-card" style="flex:1;padding:14px 18px;">
-        <div class="stat-label">Delivered</div>
-        <div class="stat-val stat-green" style="font-size:24px;" id="log-delivered-count">${deliveredSet.size}</div>
-      </div>
-      <div class="stat-card" style="flex:1;padding:14px 18px;">
-        <div class="stat-label">Remaining</div>
-        <div class="stat-val stat-accent" style="font-size:24px;" id="log-remaining-count">${myCustomers.length-deliveredSet.size}</div>
-      </div>
-      <div class="stat-card" style="flex:1;padding:14px 18px;">
-        <div class="stat-label">Month Litres</div>
-        <div class="stat-val stat-blue" style="font-size:24px;">${monthDels.reduce((s,d)=>s+d.litres,0).toFixed(1)}</div>
-      </div>
-    </div>
-    ${myCustomers.length===0
-      ?'<div class="empty-state"><div class="e-icon">👥</div><p>No customers assigned to you yet.</p></div>'
-      :`<div class="cust-cards-grid">${cards}</div>`
-    }`;
-}
-
-function milkmanLogHTML() {
-  const myCustomers = DB.get('customers').filter(c=>c.milkmanId===currentUser.id && c.active);
-  const today = todayStr();
-  const todayDels = DB.get('deliveries').filter(d=>d.milkmanId===currentUser.id && d.date===today);
-  const deliveredSet = new Set(todayDels.map(d=>d.customerId));
-  const deliveredCount = deliveredSet.size;
-  const displayDate = new Date().toLocaleDateString('en-IN',{weekday:'long', day:'numeric', month:'long', year:'numeric'});
-
-  const rows = myCustomers.map(c=>{
-    const done = deliveredSet.has(c.id);
-    return `
-      <div class="delivery-row ${done?'done':''}" id="row-${c.id}">
-        <div>
-          <div style="font-weight:600;font-size:15px;color:var(--deep);">${c.name}</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:3px;">${c.address||'No address'} &nbsp;·&nbsp; ${c.dailyLitres} L/day</div>
-        </div>
-        <button class="milk-glass-btn" onclick="toggleDelivery('${c.id}', ${c.dailyLitres}, '${c.vendorId}')" id="glass-btn-${c.id}" title="${done?'Delivered':'Tap to mark delivered'}">
-          <div class="glass-wrap">
-            ${milkGlassSVG(done)}
-          </div>
-          <span class="glass-label" style="color:${done?'var(--green)':'var(--muted)'};">${done?'Delivered':'Tap'}</span>
+        <button class="card-glass-btn" onclick="toggleDelivery('${c.id}',${c.daily_litres||c.dailyLitres||1},'${vendorId}')" id="glass-btn-${c.id}">
+          <div class="glass-wrap" style="width:48px;height:62px;">${milkGlassSVG(done)}</div>
+          <span class="card-glass-label" style="color:${glassColor};">${glassLabel}</span>
         </button>
       </div>`;
   }).join('');
 
   return `
     <div class="page-header">
-      <div class="page-title">Log Delivery</div>
-      <div class="page-sub">${displayDate}</div>
+      <div class="page-title">My Route</div>
+      <div class="page-sub">${displayDate} &nbsp;·&nbsp; ${vendor.shop_name}</div>
     </div>
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
-      <div class="stat-card" style="flex:1;padding:14px 18px;">
-        <div class="stat-label">Delivered</div>
-        <div class="stat-val stat-green" style="font-size:24px;" id="log-delivered-count">${deliveredCount}</div>
-      </div>
-      <div class="stat-card" style="flex:1;padding:14px 18px;">
-        <div class="stat-label">Remaining</div>
-        <div class="stat-val stat-accent" style="font-size:24px;" id="log-remaining-count">${myCustomers.length - deliveredCount}</div>
-      </div>
-      <div class="stat-card" style="flex:1;padding:14px 18px;">
-        <div class="stat-label">Total</div>
-        <div class="stat-val" style="font-size:24px;">${myCustomers.length}</div>
-      </div>
+    <div style="display:flex;gap:12px;margin-bottom:24px;">
+      <div class="stat-card" style="flex:1;padding:14px 18px;"><div class="stat-label">Total</div><div class="stat-val" style="font-size:24px;">${myCustomers.length}</div></div>
+      <div class="stat-card" style="flex:1;padding:14px 18px;"><div class="stat-label">Delivered</div><div class="stat-val stat-green" style="font-size:24px;" id="log-delivered-count">${deliveredSet.size}</div></div>
+      <div class="stat-card" style="flex:1;padding:14px 18px;"><div class="stat-label">Remaining</div><div class="stat-val stat-accent" style="font-size:24px;" id="log-remaining-count">${myCustomers.length-deliveredSet.size}</div></div>
+      <div class="stat-card" style="flex:1;padding:14px 18px;"><div class="stat-label">Month Litres</div><div class="stat-val stat-blue" style="font-size:24px;">${monthDels.reduce((s,d)=>s+(d.litres||0),0).toFixed(1)}</div></div>
     </div>
-    ${myCustomers.length===0?'<div class="empty-state"><div class="e-icon">👥</div><p>No customers assigned to you.</p></div>':''}
-    <div id="delivery-list">${rows}</div>`;
+    ${myCustomers.length===0
+      ?'<div class="empty-state"><div class="e-icon">👥</div><p>No customers assigned to you yet.</p></div>'
+      :`<div class="cust-cards-grid">${cards}</div>`
+    }`;
 }
 
 function milkGlassSVG(filled) {
@@ -1598,7 +1380,6 @@ function milkGlassSVG(filled) {
       <rect x="8" y="5" width="28" height="2.5" rx="1.5" fill="#2E7D32" opacity="0.4"/>
       <circle cx="18" cy="34" r="2.5" fill="white" opacity="0.5"/>
       <circle cx="28" cy="40" r="1.8" fill="white" opacity="0.4"/>
-      <path d="M14 44 Q19 40 26 44 Q31 47 36 44" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
     </svg>`;
   } else {
     return `<svg class="glass-svg" viewBox="0 0 44 56" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1609,80 +1390,53 @@ function milkGlassSVG(filled) {
   }
 }
 
-function toggleDelivery(custId, defaultLitres, vendorId) {
+async function toggleDelivery(custId, defaultLitres, vendorId) {
   const today = todayStr();
-  let deliveries = DB.get('deliveries');
-  const recId = 'del_'+today+'_'+custId;
-  const existingIdx = deliveries.findIndex(d=>d.id===recId);
+  const existingIdx = _cache.deliveries.findIndex(d=>d.date===today&&(d.customer_id===custId||d.customerId===custId));
   const isDone = existingIdx >= 0;
 
-  if (isDone) {
-    deliveries.splice(existingIdx, 1);
-    DB.set('deliveries', deliveries);
-    const card = document.getElementById('card-'+custId);
-    const btn  = document.getElementById('glass-btn-'+custId);
-    if(card) card.classList.remove('card-done');
-    if(btn) {
-      btn.querySelector('.glass-wrap').innerHTML = milkGlassSVG(false);
-      const lbl = btn.querySelector('.card-glass-label');
-      lbl.textContent = 'Deliver'; lbl.style.color = 'var(--muted)';
-    }
-    const litresLbl = document.getElementById('litres-label-'+custId);
-    if(litresLbl) { litresLbl.style.color = 'var(--accent)'; }
-  } else {
-    deliveries.push({ id:recId, date:today, customerId:custId, milkmanId:currentUser.id, litres:defaultLitres, vendorId });
-    DB.set('deliveries', deliveries);
-    const card = document.getElementById('card-'+custId);
-    const btn  = document.getElementById('glass-btn-'+custId);
-    if(card) card.classList.add('card-done');
-    if(btn) {
-      btn.querySelector('.glass-wrap').innerHTML = milkGlassSVG(true);
-      const lbl = btn.querySelector('.card-glass-label');
-      lbl.textContent = '✓ Done'; lbl.style.color = 'var(--green)';
-    }
-    const litresLbl = document.getElementById('litres-label-'+custId);
-    if(litresLbl) { litresLbl.textContent = defaultLitres+' L today'; litresLbl.style.color = 'var(--green)'; }
-    const valEl = document.getElementById('litres-val-'+custId);
-    if(valEl) valEl.textContent = defaultLitres;
-  }
-  updateCounters();
-}
+  try {
+    const res = await API.post('/milkman/'+currentUser.id+'/delivery/toggle', {
+      date: today, customer_id: custId, vendor_id: vendorId, litres: defaultLitres
+    });
 
-function adjustLitres(custId, vendorId, defaultLitres, delta) {
-  const valEl = document.getElementById('litres-val-'+custId);
-  if(!valEl) return;
-  let current = parseFloat(valEl.textContent)||defaultLitres;
-  current = Math.max(0.5, Math.round((current + delta) * 2) / 2); // step 0.5, min 0.5
-  valEl.textContent = current;
-  // If already marked delivered today, update the delivery record live
-  const today = todayStr();
-  let deliveries = DB.get('deliveries');
-  const recId = 'del_'+today+'_'+custId;
-  const idx = deliveries.findIndex(d=>d.id===recId);
-  if(idx>=0) {
-    deliveries[idx].litres = current;
-    DB.set('deliveries', deliveries);
-    const lbl = document.getElementById('litres-label-'+custId);
-    if(lbl) lbl.textContent = current+' L today';
-    // Update counters
-    updateCounters(custId);
-  }
-}
+    if (isDone) {
+      _cache.deliveries.splice(existingIdx, 1);
+      const card = document.getElementById('card-'+custId);
+      const btn  = document.getElementById('glass-btn-'+custId);
+      if(card) card.classList.remove('card-done');
+      if(btn) {
+        btn.querySelector('.glass-wrap').innerHTML = milkGlassSVG(false);
+        const lbl = btn.querySelector('.card-glass-label');
+        if(lbl) { lbl.textContent = 'Tap'; lbl.style.color = 'var(--muted)'; }
+      }
+    } else {
+      const newDel = { id: 'del_'+today+'_'+custId, date: today, customer_id: custId, milkman_id: currentUser.id, litres: defaultLitres, vendor_id: vendorId };
+      _cache.deliveries.push(newDel);
+      const card = document.getElementById('card-'+custId);
+      const btn  = document.getElementById('glass-btn-'+custId);
+      if(card) card.classList.add('card-done');
+      if(btn) {
+        btn.querySelector('.glass-wrap').innerHTML = milkGlassSVG(true);
+        const lbl = btn.querySelector('.card-glass-label');
+        if(lbl) { lbl.textContent = '✓ Done'; lbl.style.color = 'var(--green)'; }
+      }
+    }
 
-function updateCounters() {
-  const myCustomers = DB.get('customers').filter(c=>c.milkmanId===currentUser.id && c.active);
-  const todayDels   = DB.get('deliveries').filter(d=>d.milkmanId===currentUser.id && d.date===todayStr());
-  const dc = document.getElementById('log-delivered-count');
-  const rc = document.getElementById('log-remaining-count');
-  if(dc) dc.textContent = todayDels.length;
-  if(rc) rc.textContent = myCustomers.length - todayDels.length;
+    const allCusts = _cache.customers;
+    const todayDels = _cache.deliveries.filter(d=>d.date===today);
+    const dc = document.getElementById('log-delivered-count');
+    const rc = document.getElementById('log-remaining-count');
+    if(dc) dc.textContent = todayDels.length;
+    if(rc) rc.textContent = allCusts.length - todayDels.length;
+  } catch(e) { toast('Error: '+e.message); }
 }
 
 function milkmanHistoryHTML() {
-  const deliveries = DB.get('deliveries').filter(d=>d.milkmanId===currentUser.id);
-  const customers = DB.get('customers');
+  const deliveries = _cache.deliveries || [];
+  const customers = _cache.customers || [];
   const rows = deliveries.slice(-50).reverse().map(d=>{
-    const c = customers.find(x=>x.id===d.customerId);
+    const c = customers.find(x=>x.id===(d.customer_id||d.customerId));
     return `<tr><td>${d.date}</td><td>${c?.name||'Unknown'}</td><td>${d.litres} L</td></tr>`;
   }).join('');
   return `
@@ -1709,15 +1463,12 @@ function buildCustomerUI(sb, ct) {
 
 function customerDashHTML() {
   const today = todayStr();
-  const deliveries = DB.get('deliveries').filter(d=>d.customerId===currentUser.id);
-  const monthDels = deliveries.filter(d=>d.date.startsWith(thisMonth()));
+  const deliveries = _cache.deliveries || [];
+  const monthDels = deliveries.filter(d=>d.date&&d.date.startsWith(thisMonth()));
   const todayDel = deliveries.find(d=>d.date===today);
-  const vendor = DB.get('vendors').find(v=>v.id===currentUser.vendorId);
-  const milkman = DB.get('milkmen').find(m=>m.id===currentUser.milkmanId);
   const now = new Date();
   const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
 
-  // Build calendar
   let calHTML = '<div class="delivery-grid">';
   for(let d=1;d<=daysInMonth;d++) {
     const ds = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
@@ -1726,7 +1477,7 @@ function customerDashHTML() {
     const isFuture = d > now.getDate();
     let cls = 'day-cell'+(isToday?' today':'');
     let val = '—';
-    if(!isFuture && del){ cls+=' delivered'; val=del.litres+'L'; }
+    if(!isFuture && del){ cls+=' delivered'; val=(del.litres||0)+'L'; }
     else if(!isFuture && !del && d<now.getDate()){ cls+=' not-delivered'; val='✗'; }
     calHTML+=`<div class="${cls}"><div class="day-num">${d}</div><div class="day-val">${val}</div></div>`;
   }
@@ -1736,9 +1487,9 @@ function customerDashHTML() {
     <div class="page-header"><div class="page-title">My Deliveries</div><div class="page-sub">Hello, ${currentUser.name}! Track your daily milk delivery</div></div>
     <div class="stats-grid">
       <div class="stat-card"><div class="stat-label">Today's Delivery</div><div class="stat-val stat-${todayDel?'green':'red'}">${todayDel?todayDel.litres+'L':'—'}</div></div>
-      <div class="stat-card"><div class="stat-label">This Month Total</div><div class="stat-val stat-blue">${monthDels.reduce((s,d)=>s+d.litres,0).toFixed(1)}<span class="stat-unit"> L</span></div></div>
-      <div class="stat-card"><div class="stat-label">Daily Rate</div><div class="stat-val stat-accent">${currentUser.dailyLitres}<span class="stat-unit"> L/day</span></div></div>
-      <div class="stat-card"><div class="stat-label">Price per Litre</div><div class="stat-val">₹${vendor?.pricePerLitre||60}</div></div>
+      <div class="stat-card"><div class="stat-label">This Month Total</div><div class="stat-val stat-blue">${monthDels.reduce((s,d)=>s+(d.litres||0),0).toFixed(1)}<span class="stat-unit"> L</span></div></div>
+      <div class="stat-card"><div class="stat-label">Daily Rate</div><div class="stat-val stat-accent">${currentUser.daily_litres||currentUser.dailyLitres||1}<span class="stat-unit"> L/day</span></div></div>
+      <div class="stat-card"><div class="stat-label">Price per Litre</div><div class="stat-val">₹${currentUser.rate_per_litre||currentUser.ratePerLitre||60}</div></div>
     </div>
     <div class="card">
       <div class="card-title">${now.toLocaleDateString('en-IN',{month:'long',year:'numeric'})} — Delivery Calendar</div>
@@ -1746,50 +1497,25 @@ function customerDashHTML() {
         ${['M','T','W','T','F','S','S'].map(d=>`<div style="font-size:11px;font-weight:600;color:var(--muted);padding:4px;">${d}</div>`).join('')}
       </div>
       ${calHTML}
-      <div style="display:flex;gap:16px;margin-top:14px;font-size:12px;color:var(--muted);">
-        <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--green-soft);border:1px solid rgba(42,122,62,0.2);display:inline-block;"></span>Delivered</span>
-        <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--red-soft);border:1px solid rgba(192,57,43,0.2);display:inline-block;"></span>Missed</span>
-        <span style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:2px;border:2px solid var(--accent);display:inline-block;"></span>Today</span>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-title">My Details</div>
-      <table style="width:100%;font-size:14px;">
-        <tr><td style="color:var(--muted);padding:8px 0;">Vendor</td><td style="font-weight:600;">${vendor?.shopName||'—'}</td></tr>
-        <tr><td style="color:var(--muted);padding:8px 0;">My Milkman</td><td style="font-weight:600;">${milkman?.name||'—'} · ${milkman?.phone||''}</td></tr>
-        <tr><td style="color:var(--muted);padding:8px 0;">Address</td><td style="font-weight:600;">${currentUser.address||'—'}</td></tr>
-      </table>
     </div>`;
 }
 
 function customerBillHTML() {
   const now = new Date();
-  const vendor = DB.get('vendors').find(v=>v.id===currentUser.vendorId);
-  const milkman = DB.get('milkmen').find(m=>m.id===currentUser.milkmanId);
-  const deliveries = DB.get('deliveries').filter(d=>d.customerId===currentUser.id && d.date.startsWith(thisMonth()));
-  const totalLitres = deliveries.reduce((s,d)=>s+d.litres,0);
-  const rate = vendor?.pricePerLitre || 60;
+  const deliveries = (_cache.deliveries||[]).filter(d=>d.date&&d.date.startsWith(thisMonth()));
+  const totalLitres = deliveries.reduce((s,d)=>s+(d.litres||0),0);
+  const rate = currentUser.rate_per_litre||currentUser.ratePerLitre||60;
   const total = totalLitres * rate;
   const monthName = now.toLocaleDateString('en-IN',{month:'long',year:'numeric'});
-
-  const delRows = deliveries.map(d=>`
-    <div class="bill-row">
-      <span>${d.date}</span>
-      <span>${d.litres} L × ₹${rate}</span>
-      <span>₹${(d.litres*rate).toFixed(2)}</span>
-    </div>`).join('');
 
   return `
     <div class="page-header"><div class="page-title">Monthly Bill</div><div class="page-sub">Auto-generated bill for ${monthName}</div></div>
     <div class="card" style="max-width:560px;">
       <div class="bill-box">
         <div class="bill-header">
-          <div style="font-size:22px;font-weight:700;margin-bottom:4px;">🥛 ${vendor?.shopName||'Dairy Shop'}</div>
-          <div style="font-size:13px;color:var(--muted);">${vendor?.address||''}</div>
-          <div style="font-size:13px;color:var(--muted);">Phone: ${vendor?.phone||''}</div>
+          <div style="font-size:22px;font-weight:700;margin-bottom:4px;">🥛 Dairy Shop</div>
           <div style="margin-top:10px;font-size:14px;font-weight:600;">BILL — ${monthName}</div>
           <div style="font-size:13px;color:var(--muted);">Customer: ${currentUser.name} · ${currentUser.phone}</div>
-          <div style="font-size:13px;color:var(--muted);">Milkman: ${milkman?.name||'—'}</div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;padding:0 0 6px;border-bottom:1px solid var(--border);">
           <span>Date</span><span style="text-align:center;">Qty</span><span style="text-align:right;">Amount</span>
@@ -1797,14 +1523,13 @@ function customerBillHTML() {
         ${deliveries.length===0?'<p style="text-align:center;color:var(--muted);padding:20px 0;font-size:13px;">No deliveries this month</p>':''}
         ${deliveries.map(d=>`
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;font-size:13px;padding:5px 0;border-bottom:1px solid rgba(26,18,8,0.05);">
-            <span>${d.date}</span><span style="text-align:center;">${d.litres}L × ₹${rate}</span><span style="text-align:right;">₹${(d.litres*rate).toFixed(2)}</span>
+            <span>${d.date}</span><span style="text-align:center;">${d.litres}L × ₹${rate}</span><span style="text-align:right;">₹${((d.litres||0)*rate).toFixed(2)}</span>
           </div>`).join('')}
         <div style="height:1px;background:var(--border);margin:12px 0;"></div>
         <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:600;padding:4px 0;"><span>Total Litres</span><span>${totalLitres.toFixed(1)} L</span></div>
         <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:600;padding:4px 0;"><span>Rate per Litre</span><span>₹${rate}</span></div>
         <div style="height:2px;background:var(--accent);margin:12px 0;border-radius:1px;"></div>
         <div style="display:flex;justify-content:space-between;font-size:20px;font-weight:700;color:var(--accent);"><span>TOTAL DUE</span><span>₹${total.toFixed(2)}</span></div>
-        <div style="text-align:center;margin-top:16px;font-size:11px;color:var(--muted);">Thank you for choosing ${vendor?.shopName||'us'}! 🙏</div>
       </div>
       <div style="margin-top:16px;">
         <button class="btn-sm btn-accent" onclick="printBill()">Print Bill</button>
