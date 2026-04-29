@@ -18,12 +18,12 @@ import random, string, os
 # ════════════════════════════════════════════════════
 #  DATABASE
 #  Set DATABASE_URL in environment or .env file
-#  Local PostgreSQL: postgresql://postgres:w00lTe$t90@localhost:5432/dudhwala
+#  Local PostgreSQL: postgresql://postgres:password@localhost:5432/dudhwala
 #  Railway/Supabase: set DATABASE_URL env variable automatically
 # ════════════════════════════════════════════════════
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://postgres:w00lTe$t90@localhost:5432/dudhwala"
+    "postgresql://postgres:password@localhost:5432/dudhwala"
 )
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
