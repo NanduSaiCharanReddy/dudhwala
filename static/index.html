@@ -767,6 +767,7 @@ function launchApp() {
 }
 
 function logout() {
+  stopVendorPolling();
   currentUser = null; currentRole = null;
   _cache = { vendors:[], milkmen:[], customers:[], deliveries:[] };
   document.getElementById('app').style.display = 'none';
@@ -777,7 +778,7 @@ function logout() {
 function buildUI() {
   const sidebarEl = document.getElementById('sidebar');
   const contentEl = document.getElementById('main-content');
-  if (currentRole === 'vendor') buildVendorUI(sidebarEl, contentEl);
+  if (currentRole === 'vendor') { buildVendorUI(sidebarEl, contentEl); setTimeout(renderVendorCustCards, 50); startVendorPolling(); }
   else if (currentRole === 'milkman') buildMilkmanUI(sidebarEl, contentEl);
   else buildCustomerUI(sidebarEl, contentEl);
 }
@@ -895,7 +896,47 @@ function vendorDashHTML() {
         <button class="btn-sm btn-blue" style="width:100%;padding:13px;font-size:14px;" onclick="showPage('v-customers')">👥 &nbsp;Manage Customers</button>
         <button class="btn-sm btn-outline" style="width:100%;padding:13px;font-size:14px;" onclick="showPage('v-deliveries')">📦 &nbsp;View Deliveries</button>
       </div>
-    </div>`;
+    </div>
+    <div style="margin-top:28px;" id="vendor-cust-cards"></div>`;
+}
+
+function renderVendorCustCards() {
+  const customers = _cache.customers || [];
+  const milkmen = _cache.milkmen || [];
+  const today = todayStr();
+  const todayDels = (_cache.deliveries||[]).filter(d=>d.date===today);
+  const el = document.getElementById('vendor-cust-cards');
+  if (!el) return;
+  if (customers.length === 0) {
+    el.innerHTML = '<div class="empty-state"><div class="e-icon">👥</div><p>No customers yet.</p></div>';
+    return;
+  }
+  let html = '<div class="card-title" style="margin-bottom:16px;font-size:16px;">📦 Today\'s Customer Deliveries</div>';
+  html += '<div class="cust-cards-grid">';
+  customers.forEach((c, i) => {
+    const done = todayDels.some(d => d.customer_id === c.id || d.customerId === c.id);
+    const mm = milkmen.find(m => m.id === (c.milkman_id || c.milkmanId));
+    const glassSVG = done
+      ? '<svg viewBox="0 0 44 56" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 6 L6 50 Q6 52 8 52 L36 52 Q38 52 38 50 L36 6 Z" fill="#E8F5E9" stroke="#2E7D32" stroke-width="2.5"/><path d="M7 18 L37 18 L36 50 Q36 51 35 51 L9 51 Q8 51 8 50 Z" fill="#A5D6A7"/></svg>'
+      : '<svg viewBox="0 0 44 56" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 6 L6 50 Q6 52 8 52 L36 52 Q38 52 38 50 L36 6 Z" fill="var(--milk-foam)" stroke="var(--border)" stroke-width="2.5"/></svg>';
+    const mmLabel = mm
+      ? '<div class="card-cust-meta" style="color:var(--accent);font-weight:600;">🛺 ' + mm.name + '</div>'
+      : '<div class="card-cust-meta" style="color:var(--red);">Unassigned</div>';
+    html += '<div class="cust-delivery-card ' + (done ? 'card-done' : '') + '" style="z-index:' + (i+1) + ';">';
+    html += '<div class="card-info">';
+    html += '<div class="card-cust-name">' + c.name + '</div>';
+    html += '<div class="card-cust-meta">' + c.phone + '</div>';
+    if (c.address) html += '<div class="card-cust-meta">' + c.address + '</div>';
+    html += '<div class="card-litres">' + (c.daily_litres||c.dailyLitres||1) + ' L/day</div>';
+    html += mmLabel;
+    html += '</div>';
+    html += '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;">';
+    html += '<div style="width:48px;height:62px;">' + glassSVG + '</div>';
+    html += '<span style="font-size:12px;font-weight:700;color:' + (done ? 'var(--green)' : 'var(--muted)') + ';">' + (done ? '✓ Done' : 'Pending') + '</span>';
+    html += '</div></div>';
+  });
+  html += '</div>';
+  el.innerHTML = html;
 }
 
 function vendorShopHTML() {
@@ -1581,6 +1622,28 @@ function openModal(title, bodyHTML, actionsHTML) {
   document.getElementById('modal').classList.add('open');
 }
 function closeModal() { document.getElementById('modal').classList.remove('open'); }
+
+let _vendorPollTimer = null;
+function startVendorPolling() {
+  stopVendorPolling();
+  _vendorPollTimer = setInterval(async () => {
+    if (currentRole !== 'vendor' || !currentUser) { stopVendorPolling(); return; }
+    try {
+      const deliveries = await API.get('/vendor/' + currentUser.id + '/deliveries');
+      _cache.deliveries = deliveries || [];
+      renderVendorCustCards();
+      // also refresh stats
+      const dashEl = document.getElementById('page-v-dash');
+      if (dashEl) {
+        const statsEl = dashEl.querySelector('.stats-section');
+        if (statsEl) statsEl.innerHTML = vendorStatsHTML();
+      }
+    } catch(e) { console.warn('Poll error', e); }
+  }, 30000); // every 30 seconds
+}
+function stopVendorPolling() {
+  if (_vendorPollTimer) { clearInterval(_vendorPollTimer); _vendorPollTimer = null; }
+}
 document.getElementById('modal').addEventListener('click', e=>{ if(e.target===document.getElementById('modal'))closeModal(); });
 </script>
 </body>
