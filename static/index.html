@@ -765,16 +765,21 @@ async function loadCacheForUser() {
   if (!currentUser) return;
   try {
     if (currentRole === 'vendor') {
-      const [milkmen, customers, deliveries] = await Promise.all([
+      const today = todayStr();
+      const month = thisMonth();
+      const [milkmen, customers, deliveries, todayDels] = await Promise.all([
         API.get('/vendor/' + currentUser.id + '/milkmen'),
         API.get('/vendor/' + currentUser.id + '/customers'),
-        API.get('/vendor/' + currentUser.id + '/deliveries'),
+        API.get('/vendor/' + currentUser.id + '/deliveries?month=' + month),
+        API.get('/vendor/' + currentUser.id + '/deliveries?month=' + today.slice(0,7)),
       ]);
       _cache.milkmen = milkmen || [];
       _cache.customers = customers || [];
       _cache.deliveries = deliveries || [];
+      _cache.todayDeliveries = (todayDels || []).filter(d => d.date === today);
       _cache.vendors = [currentUser];
     } else if (currentRole === 'milkman') {
+      const today = todayStr();
       const [custs, hist] = await Promise.all([
         API.get('/milkman/' + currentUser.id + '/customers'),
         API.get('/milkman/' + currentUser.id + '/history'),
@@ -782,6 +787,10 @@ async function loadCacheForUser() {
       _cache.customers = custs || [];
       _cache.milkmen = [currentUser];
       _cache.deliveries = hist || [];
+      // today's deliveries = customers that have deliveredToday set
+      _cache.todayDeliveries = (custs || [])
+        .filter(c => c.deliveredToday !== null && c.deliveredToday !== undefined)
+        .map(c => ({ date: today, customer_id: c.id, customerId: c.id, litres: c.deliveredToday, milkman_id: currentUser.id }));
     } else if (currentRole === 'customer') {
       const dels = await API.get('/customer/' + currentUser.id + '/deliveries');
       _cache.deliveries = dels || [];
@@ -867,7 +876,7 @@ function vendorDashHTML() {
   const customers = _cache.customers || [];
   const today = todayStr();
   const deliveries = _cache.deliveries || [];
-  const todayDels = deliveries.filter(d=>d.date===today);
+  const todayDels = _cache.todayDeliveries || deliveries.filter(d=>d.date===today);
   const totalToday = todayDels.reduce((s,d)=>s+(d.litres||0),0);
   const monthDels = deliveries.filter(d=>d.date&&d.date.startsWith(thisMonth()));
   const monthTotal = monthDels.reduce((s,d)=>s+(d.litres||0),0);
@@ -882,9 +891,9 @@ function vendorDashHTML() {
     return s + (d.litres||0) * (c?.rate_per_litre||c?.ratePerLitre||60);
   }, 0);
   const mmBreakdown = milkmen.map(m=>{
-    const mDels = todayDels.filter(d=>d.milkman_id===m.id||d.milkmanId===m.id);
+    const mDels = todayDels.filter(d=>(d.milkman_id||d.milkmanId)===m.id);
     const mLitres = mDels.reduce((s,d)=>s+(d.litres||0),0);
-    const mCusts = customers.filter(c=>c.milkman_id===m.id||c.milkmanId===m.id).length;
+    const mCusts = customers.filter(c=>(c.milkman_id||c.milkmanId)===m.id).length;
     const mDone = new Set(mDels.map(d=>d.customer_id||d.customerId)).size;
     return { name:m.name, litres:mLitres, total:mCusts, done:mDone };
   });
@@ -917,40 +926,48 @@ function vendorDashHTML() {
 
 function renderVendorCustCards() {
   const customers = _cache.customers || [];
-  const milkmen = _cache.milkmen || [];
-  const today = todayStr();
-  const todayDels = (_cache.deliveries||[]).filter(d=>d.date===today);
+  const milkmen   = _cache.milkmen || [];
+  const today     = todayStr();
+  const todayDels = _cache.todayDeliveries || (_cache.deliveries||[]).filter(d=>d.date===today);
   const el = document.getElementById('vendor-cust-cards');
   if (!el) return;
   if (customers.length === 0) {
     el.innerHTML = '<div class="empty-state"><div class="e-icon">👥</div><p>No customers yet.</p></div>';
     return;
   }
-  let html = '<div class="card-title" style="margin-bottom:16px;font-size:16px;">📦 Today\'s Customer Deliveries</div>';
+  let html = '<div class="card" style="margin-top:0;"><div class="card-header"><div class="card-title" style="margin:0;">📦 Today\'s Customer Deliveries</div><span style="font-size:12px;color:var(--muted);font-weight:600;">' + today + '</span></div>';
   html += '<div class="cust-cards-grid">';
   customers.forEach((c, i) => {
-    const done = todayDels.some(d => d.customer_id === c.id || d.customerId === c.id);
-    const mm = milkmen.find(m => m.id === (c.milkman_id || c.milkmanId));
-    const glassSVG = done
-      ? '<svg viewBox="0 0 44 56" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 6 L6 50 Q6 52 8 52 L36 52 Q38 52 38 50 L36 6 Z" fill="#E8F5E9" stroke="#2E7D32" stroke-width="2.5"/><path d="M7 18 L37 18 L36 50 Q36 51 35 51 L9 51 Q8 51 8 50 Z" fill="#A5D6A7"/></svg>'
-      : '<svg viewBox="0 0 44 56" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 6 L6 50 Q6 52 8 52 L36 52 Q38 52 38 50 L36 6 Z" fill="var(--milk-foam)" stroke="var(--border)" stroke-width="2.5"/></svg>';
-    const mmLabel = mm
-      ? '<div class="card-cust-meta" style="color:var(--accent);font-weight:600;">🛺 ' + mm.name + '</div>'
-      : '<div class="card-cust-meta" style="color:var(--red);">Unassigned</div>';
-    html += '<div class="cust-delivery-card ' + (done ? 'card-done' : '') + '" style="z-index:' + (i+1) + ';">';
-    html += '<div class="card-info">';
-    html += '<div class="card-cust-name">' + c.name + '</div>';
-    html += '<div class="card-cust-meta">' + c.phone + '</div>';
-    if (c.address) html += '<div class="card-cust-meta">' + c.address + '</div>';
-    html += '<div class="card-litres">' + (c.daily_litres||c.dailyLitres||1) + ' L/day</div>';
-    html += mmLabel;
-    html += '</div>';
-    html += '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;">';
-    html += '<div style="width:48px;height:62px;">' + glassSVG + '</div>';
-    html += '<span style="font-size:12px;font-weight:700;color:' + (done ? 'var(--green)' : 'var(--muted)') + ';">' + (done ? '✓ Done' : 'Pending') + '</span>';
-    html += '</div></div>';
+    const todayDel = todayDels.find(d => (d.customer_id||d.customerId) === c.id);
+    const done     = !!todayDel;
+    const litres   = todayDel ? (todayDel.litres||0) : (c.daily_litres||c.dailyLitres||1);
+    const mm       = milkmen.find(m => m.id === (c.milkman_id||c.milkmanId));
+    const vid      = c.vendor_id || c.vendorId || currentUser.id;
+    const mid      = c.milkman_id || c.milkmanId || '';
+    html += `<div class="cust-delivery-card ${done?'card-done':''}" id="vcard-${c.id}" style="z-index:${i+1};">
+      <div class="card-info">
+        <div class="card-cust-name">${c.name}</div>
+        <div class="card-cust-meta">${c.phone}</div>
+        ${c.address ? `<div class="card-cust-meta">${c.address}</div>` : ''}
+        ${mm ? `<div class="card-cust-meta" style="color:var(--accent);">🛺 ${mm.name}</div>` : '<div class="card-cust-meta" style="color:var(--red);">No milkman</div>'}
+        <div class="card-litres" id="vlitres-label-${c.id}" style="color:${done?'var(--green)':'var(--accent)'};">${litres} L today</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button onclick="vendorAdjust('${c.id}','${vid}','${mid}',${c.daily_litres||c.dailyLitres||1},-0.5)"
+            style="width:32px;height:32px;border-radius:50%;border:2px solid var(--border);background:var(--milk-off);font-size:18px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--red);line-height:1;flex-shrink:0;">−</button>
+          <span id="vlitres-val-${c.id}" style="font-size:18px;font-weight:900;color:var(--deep);min-width:36px;text-align:center;">${litres}</span>
+          <button onclick="vendorAdjust('${c.id}','${vid}','${mid}',${c.daily_litres||c.dailyLitres||1},+0.5)"
+            style="width:32px;height:32px;border-radius:50%;border:2px solid var(--border);background:var(--milk-off);font-size:18px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--green);line-height:1;flex-shrink:0;">+</button>
+        </div>
+        <button class="card-glass-btn" onclick="vendorToggle('${c.id}','${vid}','${mid}',${c.daily_litres||c.dailyLitres||1})" id="vglass-${c.id}">
+          <div class="glass-wrap" style="width:44px;height:56px;">${milkGlassSVG(done)}</div>
+          <span class="card-glass-label" style="color:${done?'var(--green)':'var(--muted)'};">${done?'✓ Done':'Deliver'}</span>
+        </button>
+      </div>
+    </div>`;
   });
-  html += '</div>';
+  html += '</div></div>';
   el.innerHTML = html;
 }
 
@@ -1737,23 +1754,79 @@ function openModal(title, bodyHTML, actionsHTML) {
 }
 function closeModal() { document.getElementById('modal').classList.remove('open'); }
 
+// ======================= VENDOR CARD CONTROLS =======================
+function vendorAdjust(custId, vendorId, milkmanId, defaultLitres, delta) {
+  const valEl = document.getElementById('vlitres-val-'+custId);
+  if(!valEl) return;
+  let current = parseFloat(valEl.textContent)||defaultLitres;
+  current = Math.max(0.5, Math.round((current + delta) * 2) / 2);
+  valEl.textContent = current;
+  // If already delivered today, update cache record live
+  const today = todayStr();
+  if (!_cache.todayDeliveries) _cache.todayDeliveries = [];
+  const idx = _cache.todayDeliveries.findIndex(d=>(d.customer_id||d.customerId)===custId);
+  if(idx>=0) {
+    _cache.todayDeliveries[idx].litres = current;
+    const lbl = document.getElementById('vlitres-label-'+custId);
+    if(lbl) lbl.textContent = current+' L today';
+  }
+}
+
+async function vendorToggle(custId, vendorId, milkmanId, defaultLitres) {
+  const valEl  = document.getElementById('vlitres-val-'+custId);
+  const litres = valEl ? parseFloat(valEl.textContent)||defaultLitres : defaultLitres;
+  const today  = todayStr();
+  if (!_cache.todayDeliveries) _cache.todayDeliveries = [];
+  const idx    = _cache.todayDeliveries.findIndex(d=>(d.customer_id||d.customerId)===custId);
+  const isDone = idx >= 0;
+  try {
+    await API.post('/milkman/'+(milkmanId||currentUser.id)+'/delivery/toggle', {
+      date: today, customer_id: custId, vendor_id: vendorId, litres
+    });
+    if(isDone) {
+      _cache.todayDeliveries.splice(idx, 1);
+    } else {
+      _cache.todayDeliveries.push({ date:today, customer_id:custId, customerId:custId, milkman_id:milkmanId||'', litres, vendor_id:vendorId });
+    }
+    // Update card UI
+    const card   = document.getElementById('vcard-'+custId);
+    const glsBtn = document.getElementById('vglass-'+custId);
+    const lbl    = document.getElementById('vlitres-label-'+custId);
+    if(isDone) {
+      card?.classList.remove('card-done');
+      if(glsBtn){ glsBtn.querySelector('.glass-wrap').innerHTML=milkGlassSVG(false); const gl=glsBtn.querySelector('.card-glass-label'); gl.textContent='Deliver'; gl.style.color='var(--muted)'; }
+      if(lbl){ lbl.style.color='var(--accent)'; }
+    } else {
+      card?.classList.add('card-done');
+      if(glsBtn){ glsBtn.querySelector('.glass-wrap').innerHTML=milkGlassSVG(true); const gl=glsBtn.querySelector('.card-glass-label'); gl.textContent='✓ Done'; gl.style.color='var(--green)'; }
+      if(lbl){ lbl.textContent=litres+' L today'; lbl.style.color='var(--green)'; }
+    }
+    // Refresh the summary card
+    const dashEl = document.getElementById('page-v-dash');
+    if(dashEl) { dashEl.innerHTML = vendorDashHTML(); renderVendorCustCards(); }
+  } catch(e) { toast('Error: '+e.message); }
+}
+
 let _vendorPollTimer = null;
 function startVendorPolling() {
   stopVendorPolling();
   _vendorPollTimer = setInterval(async () => {
     if (currentRole !== 'vendor' || !currentUser) { stopVendorPolling(); return; }
     try {
-      const deliveries = await API.get('/vendor/' + currentUser.id + '/deliveries');
+      const today = todayStr();
+      const month = thisMonth();
+      const [deliveries, todayDels] = await Promise.all([
+        API.get('/vendor/' + currentUser.id + '/deliveries?month=' + month),
+        API.get('/vendor/' + currentUser.id + '/deliveries?month=' + month),
+      ]);
       _cache.deliveries = deliveries || [];
+      _cache.todayDeliveries = (todayDels || []).filter(d => d.date === today);
       renderVendorCustCards();
-      // also refresh stats
       const dashEl = document.getElementById('page-v-dash');
-      if (dashEl) {
-        const statsEl = dashEl.querySelector('.stats-section');
-        if (statsEl) statsEl.innerHTML = vendorStatsHTML();
-      }
+      if(dashEl) dashEl.innerHTML = vendorDashHTML();
+      renderVendorCustCards();
     } catch(e) { console.warn('Poll error', e); }
-  }, 30000); // every 30 seconds
+  }, 30000);
 }
 function stopVendorPolling() {
   if (_vendorPollTimer) { clearInterval(_vendorPollTimer); _vendorPollTimer = null; }
