@@ -765,21 +765,16 @@ async function loadCacheForUser() {
   if (!currentUser) return;
   try {
     if (currentRole === 'vendor') {
-      const today = todayStr();
-      const month = thisMonth();
-      const [milkmen, customers, deliveries, todayDels] = await Promise.all([
+      const [milkmen, customers, deliveries] = await Promise.all([
         API.get('/vendor/' + currentUser.id + '/milkmen'),
         API.get('/vendor/' + currentUser.id + '/customers'),
-        API.get('/vendor/' + currentUser.id + '/deliveries?month=' + month),
-        API.get('/vendor/' + currentUser.id + '/deliveries?month=' + today.slice(0,7)),
+        API.get('/vendor/' + currentUser.id + '/deliveries'),
       ]);
       _cache.milkmen = milkmen || [];
       _cache.customers = customers || [];
       _cache.deliveries = deliveries || [];
-      _cache.todayDeliveries = (todayDels || []).filter(d => d.date === today);
       _cache.vendors = [currentUser];
     } else if (currentRole === 'milkman') {
-      const today = todayStr();
       const [custs, hist] = await Promise.all([
         API.get('/milkman/' + currentUser.id + '/customers'),
         API.get('/milkman/' + currentUser.id + '/history'),
@@ -787,10 +782,6 @@ async function loadCacheForUser() {
       _cache.customers = custs || [];
       _cache.milkmen = [currentUser];
       _cache.deliveries = hist || [];
-      // today's deliveries = customers that have deliveredToday set
-      _cache.todayDeliveries = (custs || [])
-        .filter(c => c.deliveredToday !== null && c.deliveredToday !== undefined)
-        .map(c => ({ date: today, customer_id: c.id, customerId: c.id, litres: c.deliveredToday, milkman_id: currentUser.id }));
     } else if (currentRole === 'customer') {
       const dels = await API.get('/customer/' + currentUser.id + '/deliveries');
       _cache.deliveries = dels || [];
@@ -876,7 +867,7 @@ function vendorDashHTML() {
   const customers = _cache.customers || [];
   const today = todayStr();
   const deliveries = _cache.deliveries || [];
-  const todayDels = _cache.todayDeliveries || deliveries.filter(d=>d.date===today);
+  const todayDels = deliveries.filter(d=>d.date===today);
   const totalToday = todayDels.reduce((s,d)=>s+(d.litres||0),0);
   const monthDels = deliveries.filter(d=>d.date&&d.date.startsWith(thisMonth()));
   const monthTotal = monthDels.reduce((s,d)=>s+(d.litres||0),0);
@@ -891,9 +882,9 @@ function vendorDashHTML() {
     return s + (d.litres||0) * (c?.rate_per_litre||c?.ratePerLitre||60);
   }, 0);
   const mmBreakdown = milkmen.map(m=>{
-    const mDels = todayDels.filter(d=>(d.milkman_id||d.milkmanId)===m.id);
+    const mDels = todayDels.filter(d=>d.milkman_id===m.id||d.milkmanId===m.id);
     const mLitres = mDels.reduce((s,d)=>s+(d.litres||0),0);
-    const mCusts = customers.filter(c=>(c.milkman_id||c.milkmanId)===m.id).length;
+    const mCusts = customers.filter(c=>c.milkman_id===m.id||c.milkmanId===m.id).length;
     const mDone = new Set(mDels.map(d=>d.customer_id||d.customerId)).size;
     return { name:m.name, litres:mLitres, total:mCusts, done:mDone };
   });
@@ -926,48 +917,40 @@ function vendorDashHTML() {
 
 function renderVendorCustCards() {
   const customers = _cache.customers || [];
-  const milkmen   = _cache.milkmen || [];
-  const today     = todayStr();
-  const todayDels = _cache.todayDeliveries || (_cache.deliveries||[]).filter(d=>d.date===today);
+  const milkmen = _cache.milkmen || [];
+  const today = todayStr();
+  const todayDels = (_cache.deliveries||[]).filter(d=>d.date===today);
   const el = document.getElementById('vendor-cust-cards');
   if (!el) return;
   if (customers.length === 0) {
     el.innerHTML = '<div class="empty-state"><div class="e-icon">👥</div><p>No customers yet.</p></div>';
     return;
   }
-  let html = '<div class="card" style="margin-top:0;"><div class="card-header"><div class="card-title" style="margin:0;">📦 Today\'s Customer Deliveries</div><span style="font-size:12px;color:var(--muted);font-weight:600;">' + today + '</span></div>';
+  let html = '<div class="card-title" style="margin-bottom:16px;font-size:16px;">📦 Today\'s Customer Deliveries</div>';
   html += '<div class="cust-cards-grid">';
   customers.forEach((c, i) => {
-    const todayDel = todayDels.find(d => (d.customer_id||d.customerId) === c.id);
-    const done     = !!todayDel;
-    const litres   = todayDel ? (todayDel.litres||0) : (c.daily_litres||c.dailyLitres||1);
-    const mm       = milkmen.find(m => m.id === (c.milkman_id||c.milkmanId));
-    const vid      = c.vendor_id || c.vendorId || currentUser.id;
-    const mid      = c.milkman_id || c.milkmanId || '';
-    html += `<div class="cust-delivery-card ${done?'card-done':''}" id="vcard-${c.id}" style="z-index:${i+1};">
-      <div class="card-info">
-        <div class="card-cust-name">${c.name}</div>
-        <div class="card-cust-meta">${c.phone}</div>
-        ${c.address ? `<div class="card-cust-meta">${c.address}</div>` : ''}
-        ${mm ? `<div class="card-cust-meta" style="color:var(--accent);">🛺 ${mm.name}</div>` : '<div class="card-cust-meta" style="color:var(--red);">No milkman</div>'}
-        <div class="card-litres" id="vlitres-label-${c.id}" style="color:${done?'var(--green)':'var(--accent)'};">${litres} L today</div>
-      </div>
-      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
-        <div style="display:flex;align-items:center;gap:8px;">
-          <button onclick="vendorAdjust('${c.id}','${vid}','${mid}',${c.daily_litres||c.dailyLitres||1},-0.5)"
-            style="width:32px;height:32px;border-radius:50%;border:2px solid var(--border);background:var(--milk-off);font-size:18px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--red);line-height:1;flex-shrink:0;">−</button>
-          <span id="vlitres-val-${c.id}" style="font-size:18px;font-weight:900;color:var(--deep);min-width:36px;text-align:center;">${litres}</span>
-          <button onclick="vendorAdjust('${c.id}','${vid}','${mid}',${c.daily_litres||c.dailyLitres||1},+0.5)"
-            style="width:32px;height:32px;border-radius:50%;border:2px solid var(--border);background:var(--milk-off);font-size:18px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--green);line-height:1;flex-shrink:0;">+</button>
-        </div>
-        <button class="card-glass-btn" onclick="vendorToggle('${c.id}','${vid}','${mid}',${c.daily_litres||c.dailyLitres||1})" id="vglass-${c.id}">
-          <div class="glass-wrap" style="width:44px;height:56px;">${milkGlassSVG(done)}</div>
-          <span class="card-glass-label" style="color:${done?'var(--green)':'var(--muted)'};">${done?'✓ Done':'Deliver'}</span>
-        </button>
-      </div>
-    </div>`;
+    const done = todayDels.some(d => d.customer_id === c.id || d.customerId === c.id);
+    const mm = milkmen.find(m => m.id === (c.milkman_id || c.milkmanId));
+    const glassSVG = done
+      ? '<svg viewBox="0 0 44 56" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 6 L6 50 Q6 52 8 52 L36 52 Q38 52 38 50 L36 6 Z" fill="#E8F5E9" stroke="#2E7D32" stroke-width="2.5"/><path d="M7 18 L37 18 L36 50 Q36 51 35 51 L9 51 Q8 51 8 50 Z" fill="#A5D6A7"/></svg>'
+      : '<svg viewBox="0 0 44 56" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 6 L6 50 Q6 52 8 52 L36 52 Q38 52 38 50 L36 6 Z" fill="var(--milk-foam)" stroke="var(--border)" stroke-width="2.5"/></svg>';
+    const mmLabel = mm
+      ? '<div class="card-cust-meta" style="color:var(--accent);font-weight:600;">🛺 ' + mm.name + '</div>'
+      : '<div class="card-cust-meta" style="color:var(--red);">Unassigned</div>';
+    html += '<div class="cust-delivery-card ' + (done ? 'card-done' : '') + '" style="z-index:' + (i+1) + ';">';
+    html += '<div class="card-info">';
+    html += '<div class="card-cust-name">' + c.name + '</div>';
+    html += '<div class="card-cust-meta">' + c.phone + '</div>';
+    if (c.address) html += '<div class="card-cust-meta">' + c.address + '</div>';
+    html += '<div class="card-litres">' + (c.daily_litres||c.dailyLitres||1) + ' L/day</div>';
+    html += mmLabel;
+    html += '</div>';
+    html += '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;">';
+    html += '<div style="width:48px;height:62px;">' + glassSVG + '</div>';
+    html += '<span style="font-size:12px;font-weight:700;color:' + (done ? 'var(--green)' : 'var(--muted)') + ';">' + (done ? '✓ Done' : 'Pending') + '</span>';
+    html += '</div></div>';
   });
-  html += '</div></div>';
+  html += '</div>';
   el.innerHTML = html;
 }
 
@@ -1414,55 +1397,29 @@ function milkmanDashHTML() {
   const today = todayStr();
   const todayDels = (_cache.deliveries||[]).filter(d=>d.date===today);
   const deliveredSet = new Set(todayDels.map(d=>d.customer_id||d.customerId));
-  const monthDels = (_cache.deliveries||[]).filter(d=>d.date&&d.date.startsWith(thisMonth()));
   const todayLitres = todayDels.reduce((s,d)=>s+(d.litres||0),0);
   const displayDate = new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
-  const remaining = myCustomers.length - deliveredSet.size;
 
   const cards = myCustomers.map((c, i)=>{
     const done = deliveredSet.has(c.id);
     const deliveredLitres = done ? (todayDels.find(d=>(d.customer_id||d.customerId)===c.id)?.litres||0) : 0;
     const vendorId = c.vendor_id||c.vendorId||'';
     const defaultL = c.daily_litres||c.dailyLitres||1;
-
-    // If delivered today — show locked card with delivered info
-    if (done) {
-      return `
-        <div class="cust-delivery-card card-done" id="card-${c.id}" style="z-index:${i+1};">
-          <div class="card-info">
-            <div class="card-cust-name">${c.name}</div>
-            <div class="card-cust-meta">${c.phone}</div>
-            ${c.address ? `<div class="card-cust-meta">${c.address}</div>` : ''}
-            <div class="card-litres" style="color:var(--green);">✓ Delivered ${deliveredLitres}L today</div>
-            <div style="font-size:11px;color:var(--muted);margin-top:2px;">Next delivery: tomorrow</div>
-          </div>
-          <div style="display:flex;flex-direction:column;align-items:center;gap:5px;">
-            <div class="glass-wrap" style="width:48px;height:62px;">${milkGlassSVG(true)}</div>
-            <span style="font-size:10px;font-weight:800;color:var(--green);">✓ Done</span>
-          </div>
-        </div>`;
-    }
-
-    // Not delivered — show with +/- and tap button
     return `
-      <div class="cust-delivery-card" id="card-${c.id}" style="z-index:${i+1};">
+      <div class="cust-delivery-card ${done?'card-done':''}" id="card-${c.id}" style="z-index:${i+1};">
         <div class="card-info">
           <div class="card-cust-name">${c.name}</div>
           <div class="card-cust-meta">${c.phone}</div>
           ${c.address ? `<div class="card-cust-meta">${c.address}</div>` : ''}
-          <div class="card-litres">${defaultL} L/day</div>
-        </div>
-        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
-          <button class="card-glass-btn" onclick="toggleDelivery('${c.id}',parseFloat(document.getElementById('litres-${c.id}').value)||${defaultL},'${vendorId}')" id="glass-btn-${c.id}">
-            <div class="glass-wrap" style="width:48px;height:62px;">${milkGlassSVG(false)}</div>
-            <span class="card-glass-label" style="color:var(--muted);">Tap</span>
-          </button>
-          <div style="display:flex;align-items:center;gap:4px;">
-            <button onclick="event.stopPropagation();adjustLitres('${c.id}',${defaultL},-0.5)" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--border);background:var(--milk-off);cursor:pointer;font-size:14px;font-weight:700;color:var(--red);">−</button>
-            <input id="litres-${c.id}" type="number" value="${defaultL}" min="0.5" step="0.5" style="width:52px;text-align:center;padding:4px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-weight:700;font-family:'Nunito',sans-serif;background:var(--milk-off);color:var(--deep);" onclick="event.stopPropagation()" />
-            <button onclick="event.stopPropagation();adjustLitres('${c.id}',${defaultL},0.5)" style="width:24px;height:24px;border-radius:6px;border:1.5px solid var(--border);background:var(--milk-off);cursor:pointer;font-size:14px;font-weight:700;color:var(--green);">+</button>
+          <div class="card-litres" id="litres-label-${c.id}" style="color:${done?'var(--green)':'var(--accent)'};">
+            ${done ? '✓ Delivered '+deliveredLitres+'L today' : defaultL+' L/day'}
           </div>
-          <span style="font-size:10px;color:var(--muted);">Tap glass to deliver</span>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:5px;">
+          <button class="card-glass-btn" onclick="toggleDelivery('${c.id}',${defaultL},'${vendorId}')" id="glass-btn-${c.id}">
+            <div class="glass-wrap" style="width:52px;height:66px;">${milkGlassSVG(done)}</div>
+            <span class="card-glass-label" style="color:${done?'var(--green)':'var(--accent)'};">${done?'✓ Done':'Tap'}</span>
+          </button>
         </div>
       </div>`;
   }).join('');
@@ -1472,25 +1429,15 @@ function milkmanDashHTML() {
       <div class="page-title">My Route</div>
       <div class="page-sub">${displayDate}</div>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
-      <div class="stat-card" style="padding:14px 18px;"><div class="stat-label">Total Customers</div><div class="stat-val" style="font-size:26px;">${myCustomers.length}</div></div>
-      <div class="stat-card" style="padding:14px 18px;"><div class="stat-label">Delivered Today</div><div class="stat-val stat-green" style="font-size:26px;" id="log-delivered-count">${deliveredSet.size}</div></div>
-      <div class="stat-card" style="padding:14px 18px;"><div class="stat-label">Remaining</div><div class="stat-val stat-accent" style="font-size:26px;" id="log-remaining-count">${remaining}</div></div>
-      <div class="stat-card" style="padding:14px 18px;"><div class="stat-label">Today's Litres</div><div class="stat-val stat-blue" style="font-size:26px;" id="log-today-litres">${todayLitres.toFixed(1)}</div></div>
-    </div>
     <div class="card" style="margin-bottom:20px;">
       <div class="card-title" style="margin-bottom:12px;">📊 Today's Summary</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
-        <div style="text-align:center;padding:12px;background:var(--green-soft);border-radius:12px;">
-          <div style="font-size:22px;font-weight:900;color:var(--green);" id="summary-delivered">${deliveredSet.size}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="text-align:center;padding:14px;background:var(--green-soft);border-radius:12px;">
+          <div style="font-size:28px;font-weight:900;color:var(--green);" id="summary-delivered">${deliveredSet.size}</div>
           <div style="font-size:11px;color:var(--muted);font-weight:700;margin-top:4px;">DELIVERED</div>
         </div>
-        <div style="text-align:center;padding:12px;background:var(--red-soft);border-radius:12px;">
-          <div style="font-size:22px;font-weight:900;color:var(--red);" id="summary-pending">${remaining}</div>
-          <div style="font-size:11px;color:var(--muted);font-weight:700;margin-top:4px;">PENDING</div>
-        </div>
-        <div style="text-align:center;padding:12px;background:var(--accent-soft);border-radius:12px;">
-          <div style="font-size:22px;font-weight:900;color:var(--accent);" id="summary-litres">${todayLitres.toFixed(1)}L</div>
+        <div style="text-align:center;padding:14px;background:var(--accent-soft);border-radius:12px;">
+          <div style="font-size:28px;font-weight:900;color:var(--accent);" id="summary-litres">${todayLitres.toFixed(1)}L</div>
           <div style="font-size:11px;color:var(--muted);font-weight:700;margin-top:4px;">TOTAL LITRES</div>
         </div>
       </div>
@@ -1503,20 +1450,23 @@ function milkmanDashHTML() {
 
 function milkGlassSVG(filled) {
   if (filled) {
+    // Filled: blue glass with white milk inside — real milk look
     return `<svg class="glass-svg" viewBox="0 0 44 56" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M8 6 L6 50 Q6 52 8 52 L36 52 Q38 52 38 50 L36 6 Z" fill="#E8F5E9" stroke="#2E7D32" stroke-width="2.5" stroke-linejoin="round"/>
-      <path d="M8.8 18 L35.2 18 L36 6 L8 6 Z" fill="white" opacity="0.6"/>
-      <path d="M7 18 L37 18 L36 50 Q36 51 35 51 L9 51 Q8 51 8 50 Z" fill="#A5D6A7"/>
-      <path d="M7 18 L37 18 L36.5 22 Q22 26 7.5 22 Z" fill="white" opacity="0.5"/>
-      <rect x="8" y="5" width="28" height="2.5" rx="1.5" fill="#2E7D32" opacity="0.4"/>
-      <circle cx="18" cy="34" r="2.5" fill="white" opacity="0.5"/>
-      <circle cx="28" cy="40" r="1.8" fill="white" opacity="0.4"/>
+      <path d="M8 6 L6 50 Q6 52 8 52 L36 52 Q38 52 38 50 L36 6 Z" fill="#E3F0FF" stroke="#1565C0" stroke-width="2.5" stroke-linejoin="round"/>
+      <path d="M8.8 18 L35.2 18 L36 6 L8 6 Z" fill="white" opacity="0.5"/>
+      <path d="M7 18 L37 18 L36 50 Q36 51 35 51 L9 51 Q8 51 8 50 Z" fill="white" opacity="0.95"/>
+      <path d="M7 18 L37 18 L36.5 23 Q22 28 7.5 23 Z" fill="#BBDEFB" opacity="0.8"/>
+      <rect x="8" y="5" width="28" height="2.5" rx="1.5" fill="#1565C0" opacity="0.3"/>
+      <circle cx="17" cy="34" r="2.5" fill="#BBDEFB" opacity="0.7"/>
+      <circle cx="27" cy="40" r="1.8" fill="#BBDEFB" opacity="0.6"/>
+      <path d="M13 44 Q18 40 25 44 Q30 47 35 44" stroke="#BBDEFB" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/>
     </svg>`;
   } else {
+    // Empty: just clean outline
     return `<svg class="glass-svg" viewBox="0 0 44 56" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M8 6 L6 50 Q6 52 8 52 L36 52 Q38 52 38 50 L36 6 Z" fill="var(--milk-foam)" stroke="var(--border)" stroke-width="2.5" stroke-linejoin="round"/>
-      <rect x="8" y="5" width="28" height="2.5" rx="1.5" fill="var(--border)"/>
-      <path d="M15 44 Q22 40 30 44" stroke="var(--border)" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M8 6 L6 50 Q6 52 8 52 L36 52 Q38 52 38 50 L36 6 Z" fill="var(--milk-foam)" stroke="rgba(21,101,192,0.25)" stroke-width="2.5" stroke-linejoin="round"/>
+      <rect x="8" y="5" width="28" height="2.5" rx="1.5" fill="rgba(21,101,192,0.15)"/>
+      <path d="M15 44 Q22 40 30 44" stroke="rgba(21,101,192,0.2)" stroke-width="1.5" stroke-linecap="round"/>
     </svg>`;
   }
 }
@@ -1554,36 +1504,36 @@ async function toggleDelivery(custId, defaultLitres, vendorId) {
       }
     }
 
-    const allCusts = _cache.customers;
+    const allCusts  = _cache.customers;
     const todayDels = _cache.deliveries.filter(d=>d.date===today);
     const totalLitres = todayDels.reduce((s,d)=>s+(d.litres||0),0);
-    const dc = document.getElementById('log-delivered-count');
-    const rc = document.getElementById('log-remaining-count');
-    const tl = document.getElementById('log-today-litres');
+    // Update summary card counters
     const sd = document.getElementById('summary-delivered');
-    const sp = document.getElementById('summary-pending');
     const sl = document.getElementById('summary-litres');
-    if(dc) dc.textContent = todayDels.length;
-    if(rc) rc.textContent = allCusts.length - todayDels.length;
-    if(tl) tl.textContent = totalLitres.toFixed(1);
     if(sd) sd.textContent = todayDels.length;
-    if(sp) sp.textContent = allCusts.length - todayDels.length;
     if(sl) sl.textContent = totalLitres.toFixed(1)+'L';
-    // Rebuild the delivered card to show locked state
+    // Update card UI
     const card = document.getElementById('card-'+custId);
-    if(card && !isDone) {
-      const deliveredLitres = defaultLitres;
-      card.classList.add('card-done');
-      card.innerHTML = '<div class="card-info">' +
-        '<div class="card-cust-name">' + (allCusts.find(c=>c.id===custId)?.name||'') + '</div>' +
-        '<div class="card-cust-meta">' + (allCusts.find(c=>c.id===custId)?.phone||'') + '</div>' +
-        '<div class="card-litres" style="color:var(--green);">✓ Delivered ' + deliveredLitres + 'L today</div>' +
-        '<div style="font-size:11px;color:var(--muted);margin-top:2px;">Next delivery: tomorrow</div>' +
-        '</div>' +
-        '<div style="display:flex;flex-direction:column;align-items:center;gap:5px;">' +
-        '<div class="glass-wrap" style="width:48px;height:62px;">' + milkGlassSVG(true) + '</div>' +
-        '<span style="font-size:10px;font-weight:800;color:var(--green);">✓ Done</span>' +
-        '</div>';
+    const btn  = document.getElementById('glass-btn-'+custId);
+    const lbl  = document.getElementById('litres-label-'+custId);
+    if(isDone) {
+      // was done → undo
+      card?.classList.remove('card-done');
+      if(btn) {
+        btn.querySelector('.glass-wrap').innerHTML = milkGlassSVG(false);
+        const gl = btn.querySelector('.card-glass-label');
+        if(gl){ gl.textContent='Tap'; gl.style.color='var(--accent)'; }
+      }
+      if(lbl){ lbl.textContent=(allCusts.find(c=>c.id===custId)?.daily_litres||allCusts.find(c=>c.id===custId)?.dailyLitres||defaultLitres)+' L/day'; lbl.style.color='var(--accent)'; }
+    } else {
+      // was not done → mark done
+      card?.classList.add('card-done');
+      if(btn) {
+        btn.querySelector('.glass-wrap').innerHTML = milkGlassSVG(true);
+        const gl = btn.querySelector('.card-glass-label');
+        if(gl){ gl.textContent='✓ Done'; gl.style.color='var(--green)'; }
+      }
+      if(lbl){ lbl.textContent='✓ Delivered '+defaultLitres+'L today'; lbl.style.color='var(--green)'; }
     }
   } catch(e) { toast('Error: '+e.message); }
 }
@@ -1754,79 +1704,23 @@ function openModal(title, bodyHTML, actionsHTML) {
 }
 function closeModal() { document.getElementById('modal').classList.remove('open'); }
 
-// ======================= VENDOR CARD CONTROLS =======================
-function vendorAdjust(custId, vendorId, milkmanId, defaultLitres, delta) {
-  const valEl = document.getElementById('vlitres-val-'+custId);
-  if(!valEl) return;
-  let current = parseFloat(valEl.textContent)||defaultLitres;
-  current = Math.max(0.5, Math.round((current + delta) * 2) / 2);
-  valEl.textContent = current;
-  // If already delivered today, update cache record live
-  const today = todayStr();
-  if (!_cache.todayDeliveries) _cache.todayDeliveries = [];
-  const idx = _cache.todayDeliveries.findIndex(d=>(d.customer_id||d.customerId)===custId);
-  if(idx>=0) {
-    _cache.todayDeliveries[idx].litres = current;
-    const lbl = document.getElementById('vlitres-label-'+custId);
-    if(lbl) lbl.textContent = current+' L today';
-  }
-}
-
-async function vendorToggle(custId, vendorId, milkmanId, defaultLitres) {
-  const valEl  = document.getElementById('vlitres-val-'+custId);
-  const litres = valEl ? parseFloat(valEl.textContent)||defaultLitres : defaultLitres;
-  const today  = todayStr();
-  if (!_cache.todayDeliveries) _cache.todayDeliveries = [];
-  const idx    = _cache.todayDeliveries.findIndex(d=>(d.customer_id||d.customerId)===custId);
-  const isDone = idx >= 0;
-  try {
-    await API.post('/milkman/'+(milkmanId||currentUser.id)+'/delivery/toggle', {
-      date: today, customer_id: custId, vendor_id: vendorId, litres
-    });
-    if(isDone) {
-      _cache.todayDeliveries.splice(idx, 1);
-    } else {
-      _cache.todayDeliveries.push({ date:today, customer_id:custId, customerId:custId, milkman_id:milkmanId||'', litres, vendor_id:vendorId });
-    }
-    // Update card UI
-    const card   = document.getElementById('vcard-'+custId);
-    const glsBtn = document.getElementById('vglass-'+custId);
-    const lbl    = document.getElementById('vlitres-label-'+custId);
-    if(isDone) {
-      card?.classList.remove('card-done');
-      if(glsBtn){ glsBtn.querySelector('.glass-wrap').innerHTML=milkGlassSVG(false); const gl=glsBtn.querySelector('.card-glass-label'); gl.textContent='Deliver'; gl.style.color='var(--muted)'; }
-      if(lbl){ lbl.style.color='var(--accent)'; }
-    } else {
-      card?.classList.add('card-done');
-      if(glsBtn){ glsBtn.querySelector('.glass-wrap').innerHTML=milkGlassSVG(true); const gl=glsBtn.querySelector('.card-glass-label'); gl.textContent='✓ Done'; gl.style.color='var(--green)'; }
-      if(lbl){ lbl.textContent=litres+' L today'; lbl.style.color='var(--green)'; }
-    }
-    // Refresh the summary card
-    const dashEl = document.getElementById('page-v-dash');
-    if(dashEl) { dashEl.innerHTML = vendorDashHTML(); renderVendorCustCards(); }
-  } catch(e) { toast('Error: '+e.message); }
-}
-
 let _vendorPollTimer = null;
 function startVendorPolling() {
   stopVendorPolling();
   _vendorPollTimer = setInterval(async () => {
     if (currentRole !== 'vendor' || !currentUser) { stopVendorPolling(); return; }
     try {
-      const today = todayStr();
-      const month = thisMonth();
-      const [deliveries, todayDels] = await Promise.all([
-        API.get('/vendor/' + currentUser.id + '/deliveries?month=' + month),
-        API.get('/vendor/' + currentUser.id + '/deliveries?month=' + month),
-      ]);
+      const deliveries = await API.get('/vendor/' + currentUser.id + '/deliveries');
       _cache.deliveries = deliveries || [];
-      _cache.todayDeliveries = (todayDels || []).filter(d => d.date === today);
       renderVendorCustCards();
+      // also refresh stats
       const dashEl = document.getElementById('page-v-dash');
-      if(dashEl) dashEl.innerHTML = vendorDashHTML();
-      renderVendorCustCards();
+      if (dashEl) {
+        const statsEl = dashEl.querySelector('.stats-section');
+        if (statsEl) statsEl.innerHTML = vendorStatsHTML();
+      }
     } catch(e) { console.warn('Poll error', e); }
-  }, 30000);
+  }, 30000); // every 30 seconds
 }
 function stopVendorPolling() {
   if (_vendorPollTimer) { clearInterval(_vendorPollTimer); _vendorPollTimer = null; }
