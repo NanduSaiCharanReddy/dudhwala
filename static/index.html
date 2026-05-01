@@ -782,6 +782,14 @@ async function loadCacheForUser() {
       _cache.customers = custs || [];
       _cache.milkmen = [currentUser];
       _cache.deliveries = hist || [];
+      // Fetch vendor info if milkman is linked
+      const vendorId = currentUser.vendor_id || currentUser.vendorId;
+      if (vendorId) {
+        try {
+          const vInfo = await API.get('/vendor/' + vendorId + '/dashboard');
+          if (vInfo?.vendor) _cache.vendors = [vInfo.vendor];
+        } catch(e) { console.warn('Could not fetch vendor info'); }
+      }
     } else if (currentRole === 'customer') {
       const dels = await API.get('/customer/' + currentUser.id + '/deliveries');
       _cache.deliveries = dels || [];
@@ -886,7 +894,7 @@ function vendorDashHTML() {
     const mLitres = mDels.reduce((s,d)=>s+(d.litres||0),0);
     const mCusts = customers.filter(c=>c.milkman_id===m.id||c.milkmanId===m.id).length;
     const mDone = new Set(mDels.map(d=>d.customer_id||d.customerId)).size;
-    return { name:m.name, litres:mLitres, total:mCusts, done:mDone };
+    return { id:m.id, name:m.name, litres:mLitres, total:mCusts, done:mDone };
   });
 
   return `
@@ -898,12 +906,19 @@ function vendorDashHTML() {
       <div class="card" style="margin-bottom:0;">
         <div class="card-title">Today's Delivery Summary</div>
         ${mmBreakdown.length===0?'<div class="empty-state" style="padding:16px 0;"><p>No milkmen yet.</p></div>':''}
-        ${mmBreakdown.map(m=>`
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);">
-            <div><div style="font-weight:600;font-size:13px;">${m.name}</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">${m.done}/${m.total} customers</div></div>
-            <div style="font-size:15px;font-weight:700;color:var(--green);">${m.litres.toFixed(1)} L</div>
+        <div id="vendor-summary-rows">
+          ${mmBreakdown.map(m=>`
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);" id="vsr-${m.id}">
+            <div>
+              <div style="font-weight:600;font-size:13px;">${m.name}</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px;" id="vsr-custs-${m.id}">${m.done}/${m.total} customers</div>
+            </div>
+            <div style="font-size:15px;font-weight:700;color:var(--green);" id="vsr-litres-${m.id}">${m.litres.toFixed(1)} L</div>
           </div>`).join('')}
-        ${mmBreakdown.length>0?`<div style="display:flex;justify-content:space-between;margin-top:12px;font-weight:700;font-size:13px;color:var(--accent);"><span>Total</span><span>${totalToday.toFixed(1)} L · ₹${todayRevenue.toLocaleString('en-IN',{maximumFractionDigits:0})}</span></div>`:''}
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:12px;font-weight:700;font-size:13px;color:var(--accent);" id="vsr-total">
+          <span>Total</span><span id="vsr-total-val">${totalToday.toFixed(1)} L · ₹${todayRevenue.toLocaleString('en-IN',{maximumFractionDigits:0})}</span>
+        </div>
       </div>
       <div class="card" style="margin-bottom:0;display:flex;flex-direction:column;justify-content:center;gap:14px;">
         <div class="card-title" style="margin-bottom:4px;">Quick Actions</div>
@@ -952,6 +967,33 @@ function renderVendorCustCards() {
   });
   html += '</div>';
   el.innerHTML = html;
+  updateVendorSummary();
+}
+
+function updateVendorSummary() {
+  const milkmen = _cache.milkmen || [];
+  const customers = _cache.customers || [];
+  const today = todayStr();
+  const todayDels = (_cache.deliveries||[]).filter(d=>d.date===today);
+  const custMap = {};
+  customers.forEach(c=>custMap[c.id]=c);
+  const totalLitres = todayDels.reduce((s,d)=>s+(d.litres||0),0);
+  const totalRevenue = todayDels.reduce((s,d)=>{
+    const c=custMap[d.customer_id||d.customerId];
+    return s+(d.litres||0)*(c?.rate_per_litre||c?.ratePerLitre||60);
+  },0);
+  milkmen.forEach(m=>{
+    const mDels = todayDels.filter(d=>d.milkman_id===m.id||d.milkmanId===m.id);
+    const mLitres = mDels.reduce((s,d)=>s+(d.litres||0),0);
+    const mCusts = customers.filter(c=>c.milkman_id===m.id||c.milkmanId===m.id).length;
+    const mDone = new Set(mDels.map(d=>d.customer_id||d.customerId)).size;
+    const lEl = document.getElementById('vsr-litres-'+m.id);
+    const cEl = document.getElementById('vsr-custs-'+m.id);
+    if(lEl) lEl.textContent = mLitres.toFixed(1)+' L';
+    if(cEl) cEl.textContent = mDone+'/'+mCusts+' customers';
+  });
+  const tv = document.getElementById('vsr-total-val');
+  if(tv) tv.textContent = totalLitres.toFixed(1)+' L · ₹'+totalRevenue.toLocaleString('en-IN',{maximumFractionDigits:0});
 }
 
 function vendorShopHTML() {
@@ -1541,14 +1583,27 @@ async function toggleDelivery(custId, defaultLitres, vendorId) {
 function milkmanHistoryHTML() {
   const deliveries = _cache.deliveries || [];
   const customers = _cache.customers || [];
-  const rows = deliveries.slice(-50).reverse().map(d=>{
-    const c = customers.find(x=>x.id===(d.customer_id||d.customerId));
-    return `<tr><td>${d.date}</td><td>${c?.name||'Unknown'}</td><td>${d.litres} L</td></tr>`;
+  // Build a name map from cache — also use customer_name field if API returns it
+  const custMap = {};
+  customers.forEach(c => { custMap[c.id] = c; });
+  const rows = deliveries.slice(-100).reverse().map(d=>{
+    const cid = d.customer_id||d.customerId;
+    const c = custMap[cid];
+    const name = c?.name || d.customerName || d.customer_name || '—';
+    const phone = c?.phone || d.customerPhone || d.customer_phone || '';
+    return `<tr>
+      <td>${d.date}</td>
+      <td><strong>${name}</strong>${phone?'<br><span style="font-size:11px;color:var(--muted);">'+phone+'</span>':''}</td>
+      <td>${d.litres} L</td>
+    </tr>`;
   }).join('');
   return `
     <div class="page-header"><div class="page-title">Delivery History</div><div class="page-sub">Your past delivery records</div></div>
+    <div style="margin-bottom:12px;">
+      <input id="hist-search" placeholder="🔍 Search by customer name or phone..." oninput="filterHistory()" style="width:100%;padding:12px 16px;border:2px solid var(--border);border-radius:12px;font-size:14px;font-family:'Nunito',sans-serif;font-weight:600;background:var(--milk);color:var(--deep);outline:none;" />
+    </div>
     <div class="card">
-      <div class="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Litres</th></tr></thead><tbody>${rows||'<tr><td colspan="3" style="text-align:center;color:var(--muted)">No history</td></tr>'}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Litres</th></tr></thead><tbody id="hist-tbody">${rows||'<tr><td colspan="3" style="text-align:center;color:var(--muted)">No history</td></tr>'}</tbody></table></div>
     </div>`;
 }
 
@@ -1713,6 +1768,7 @@ function startVendorPolling() {
       const deliveries = await API.get('/vendor/' + currentUser.id + '/deliveries');
       _cache.deliveries = deliveries || [];
       renderVendorCustCards();
+      updateVendorSummary();
       // also refresh stats
       const dashEl = document.getElementById('page-v-dash');
       if (dashEl) {
@@ -1787,6 +1843,13 @@ function filterCustomers() {
   });
 }
 
+function filterHistory() {
+  const q = (document.getElementById('hist-search')?.value||'').toLowerCase();
+  document.querySelectorAll('#hist-tbody tr').forEach(row => {
+    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
 function filterDeliveries() {
   const q = (document.getElementById('del-search')?.value||'').toLowerCase();
   document.querySelectorAll('#del-tbody tr').forEach(row => {
@@ -1801,9 +1864,21 @@ function profileHTML() {
   const fields = [];
 
   if(role === 'vendor') {
-    fields.push(['Name', u.name||''], ['Shop Name', u.shop_name||u.shopName||''], ['Phone', u.phone||''], ['Address', u.address||''], ['Price per Litre', '₹'+(u.price_per_litre||u.pricePerLitre||60)+'/L'], ['Vendor Code', u.id||'']);
+    // vendor profile is handled with edit form below
+    fields.push(['Phone', u.phone||''], ['Vendor Code', u.id||'']);
   } else if(role === 'milkman') {
-    fields.push(['Name', u.name||''], ['Phone', u.phone||''], ['Unique Code', u.unique_code||u.uniqueCode||''], ['Customers Assigned', (_cache.customers||[]).length+'']);
+    const vendorId = u.vendor_id||u.vendorId||'';
+    const vendor = _cache.vendors?.[0] || null;
+    const vendorName = vendor?.shop_name || vendor?.shopName || (vendorId ? 'Linked' : 'Not linked');
+    const vendorOwner = vendor?.name || '';
+    fields.push(
+      ['Name', u.name||''],
+      ['Phone', u.phone||''],
+      ['Unique Code', u.unique_code||u.uniqueCode||''],
+      ['Customers Assigned', (_cache.customers||[]).length+''],
+      ['Dairy Shop', vendorName],
+      ['Shop Owner', vendorOwner]
+    );
   } else {
     fields.push(['Name', u.name||''], ['Phone', u.phone||''], ['Address', u.address||''], ['Daily Litres', (u.daily_litres||u.dailyLitres||1)+' L/day'], ['Rate per Litre', '₹'+(u.rate_per_litre||u.ratePerLitre||60)+'/L']);
   }
@@ -1811,6 +1886,15 @@ function profileHTML() {
   const avatar = role==='vendor'?'🏪':role==='milkman'?'🛺':'🏠';
   const badge = role==='vendor'?'Vendor':role==='milkman'?'Milkman':'Customer';
   const badgeCls = role==='vendor'?'badge-vendor':role==='milkman'?'badge-milkman':'badge-customer';
+
+  const editSection = role === 'vendor' ? `
+    <div class="card" style="max-width:500px;margin-top:20px;">
+      <div class="card-title">Edit Profile</div>
+      <div class="field-group"><label>Name</label><input id="prof-name" value="${u.name||''}"/></div>
+      <div class="field-group"><label>Shop Name</label><input id="prof-shop" value="${u.shop_name||u.shopName||''}"/></div>
+      <div class="field-group"><label>Address</label><input id="prof-addr" value="${u.address||''}"/></div>
+      <button class="btn-sm btn-accent" onclick="saveProfile()">Save Changes</button>
+    </div>` : '';
 
   return `
     <div class="page-header"><div class="page-title">My Profile</div><div class="page-sub">Your account details</div></div>
@@ -1825,12 +1909,26 @@ function profileHTML() {
       ${fields.map(([label, val])=>`
         <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);">
           <div style="font-size:12px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;">${label}</div>
-          <div style="font-size:14px;font-weight:700;color:var(--deep);font-family:${label.includes('Code')||label.includes('Litre')||label.includes('Rate')?'JetBrains Mono':'Nunito'},sans-serif;">${val||'—'}</div>
+          <div style="font-size:14px;font-weight:700;color:var(--deep);font-family:${label.includes('Code')||label.includes('Litre')||label.includes('Rate')||label.includes('Dairy')?'Nunito':'Nunito'},sans-serif;">${val||'—'}</div>
         </div>`).join('')}
       <div style="margin-top:20px;">
         <button class="btn-sm btn-red" onclick="confirmAction('Are you sure you want to logout?', logout)">Logout</button>
       </div>
-    </div>`;
+    </div>
+    ${editSection}`;
+}
+
+async function saveProfile() {
+  const name = document.getElementById('prof-name')?.value.trim();
+  const shop_name = document.getElementById('prof-shop')?.value.trim();
+  const address = document.getElementById('prof-addr')?.value.trim();
+  try {
+    const res = await API.put('/vendor/'+currentUser.id+'/shop', { name, shop_name, address });
+    currentUser = { ...currentUser, name, shop_name, shopName: shop_name, address };
+    document.getElementById('nav-name').textContent = name;
+    toast('Profile updated!');
+    document.getElementById('page-v-profile').innerHTML = profileHTML();
+  } catch(e) { toast('Error: '+e.message); }
 }
 </script>
 </body>

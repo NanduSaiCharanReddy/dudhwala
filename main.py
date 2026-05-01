@@ -425,8 +425,11 @@ def toggle_delivery(mid: str, d: DeliveryToggle, db: Session = Depends(get_db)):
 @app.get("/api/milkman/{mid}/history")
 def milkman_history(mid: str, db: Session = Depends(get_db)):
     dels  = db.query(Delivery).filter(Delivery.milkman_id == mid).order_by(Delivery.date.desc()).limit(100).all()
-    custs = {c.id: c.name for c in db.query(Customer).all()}
-    return [{"date": d.date, "customerName": custs.get(d.customer_id, "Unknown"), "litres": d.litres} for d in dels]
+    custs = {c.id: c for c in db.query(Customer).all()}
+    return [{"date": d.date, "customer_id": d.customer_id, "customerId": d.customer_id,
+             "customerName": custs[d.customer_id].name if d.customer_id in custs else "Unknown",
+             "customerPhone": custs[d.customer_id].phone if d.customer_id in custs else "",
+             "litres": d.litres} for d in dels]
 
 # ════════════════════════════════════════════════════
 #  CUSTOMER
