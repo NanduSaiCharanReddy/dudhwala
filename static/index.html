@@ -797,9 +797,6 @@ function showAccessDenied(phone) {
 
 // ======================= APP LAUNCH =======================
 function launchApp() {
-  // Save session so user stays logged in on reopen
-  localStorage.setItem('dw_session', JSON.stringify({ user: currentUser, role: currentRole }));
-
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
   const badgeMap = { vendor:'badge-vendor', milkman:'badge-milkman', customer:'badge-customer' };
@@ -813,8 +810,6 @@ function launchApp() {
 
 function logout() {
   stopVendorPolling();
-  // Clear saved session
-  localStorage.removeItem('dw_session');
   currentUser = null; currentRole = null;
   _cache = { vendors:[], milkmen:[], customers:[], deliveries:[] };
   document.getElementById('app').style.display = 'none';
@@ -1874,34 +1869,7 @@ function profileHTML() {
         <button class="btn-sm btn-red" onclick="confirmAction('Are you sure you want to logout?', logout)">Logout</button>
       </div>
     </div>`;
-// ======================= AUTO LOGIN ON PAGE LOAD =======================
-(async function restoreSession() {
-  try {
-    const saved = localStorage.getItem('dw_session');
-    if (!saved) return;
-    const { user, role } = JSON.parse(saved);
-    if (!user || !role) return;
-    currentUser = user;
-    currentRole = role;
-    // Hide splash immediately
-    document.getElementById('splash').style.display = 'none';
-    document.getElementById('app').style.display = 'block';
-    const badgeMap = { vendor:'badge-vendor', milkman:'badge-milkman', customer:'badge-customer' };
-    const labelMap = { vendor:'Vendor', milkman:'Milkman', customer:'Customer' };
-    const nb = document.getElementById('nav-badge');
-    nb.textContent = labelMap[currentRole];
-    nb.className = 'nav-badge ' + badgeMap[currentRole];
-    document.getElementById('nav-name').textContent = currentUser.name || currentUser.shop_name || currentUser.shopName;
-    // Build UI instantly with cached data, then refresh from server
-    buildUI();
-    await loadCacheForUser();
-    buildUI(); // re-render with fresh data
-  } catch(e) {
-    // If anything fails, clear bad session and show splash
-    localStorage.removeItem('dw_session');
-    console.warn('Session restore failed', e);
-  }
-})();
+}
 </script>
 </body>
 </html>
